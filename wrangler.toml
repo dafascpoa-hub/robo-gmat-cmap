@@ -1,0 +1,16 @@
+name = "robo-gmat-cmap"
+main = "src/index.js"
+compatibility_date = "2026-07-30"
+
+[browser]
+binding = "BROWSER"
+
+[vars]
+CMAP_GMAT_URL = "https://gmat.procempa.com.br/gmat/login/login.do?toLogin=true"
+CMAP_GMAT_PERFIL = "SMAS - CONSUMO Almoxarifado"
+CMAP_GMAT_RELATORIO = "2085 - Geração Planilha Estoque"
+
+# Configure como secrets, não como texto simples:
+# wrangler secret put CMAP_GMAT_USUARIO
+# wrangler secret put CMAP_GMAT_SENHA
+# wrangler secret put CMAP_GMAT_ROBO_TOKEN

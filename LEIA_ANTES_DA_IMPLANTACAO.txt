@@ -1,0 +1,15 @@
+ATENÇÃO
+
+Este robô usa:
+
+import puppeteer from "@cloudflare/puppeteer";
+
+Se o editor online da Cloudflare aceitar import de pacote NPM, você pode copiar o conteúdo de:
+worker_robo_gmat_cmap_v121.txt
+
+e colar direto em worker.js.
+
+Se o editor reclamar do import ou não resolver @cloudflare/puppeteer, use este pacote como projeto de Worker com dependências, via GitHub/Cloudflare deploy ou Wrangler.
+
+O teste anterior com quickAction confirmou que o Browser Run acessa o GMAT.
+Agora o fluxo completo exige Puppeteer para login, cliques e captura do XLS.
