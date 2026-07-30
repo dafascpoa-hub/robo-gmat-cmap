@@ -1,6 +1,7 @@
-name = "robo-gmat-cmap"
+name = "robo-gmat-cmap-git"
 main = "src/index.js"
 compatibility_date = "2026-07-30"
+compatibility_flags = ["nodejs_compat"]
 
 [browser]
 binding = "BROWSER"
