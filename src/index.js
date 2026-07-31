@@ -29,6 +29,10 @@ function assertToken(request, env) {
   return token && token === configured;
 }
 
+async function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function sha256Hex(buffer) {
   const digest = await crypto.subtle.digest("SHA-256", buffer);
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
@@ -61,11 +65,6 @@ function isExcelResponse(response) {
   );
 }
 
-async function wait(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
 function allFrames(page) {
   try {
     return [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
@@ -74,13 +73,33 @@ function allFrames(page) {
   }
 }
 
-
-function allFrames(page) {
-  try {
-    return [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
-  } catch (e) {
-    return [page.mainFrame()];
+async function waitText(page, text, timeout = 20000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    for (const frame of allFrames(page)) {
+      try {
+        const ok = await frame.evaluate(
+          (targetText) => document.body && document.body.innerText && document.body.innerText.includes(targetText),
+          text
+        );
+        if (ok) return true;
+      } catch (e) {}
+    }
+    await wait(300);
   }
+  throw new Error(`Texto não encontrado: ${text}`);
+}
+
+async function dumpVisibleText(page) {
+  const chunks = [];
+  for (const frame of allFrames(page)) {
+    try {
+      const url = frame.url();
+      const text = await frame.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "");
+      chunks.push(`FRAME ${url}\n${text}`);
+    } catch (e) {}
+  }
+  return chunks.join("\n---\n").slice(0, 3000);
 }
 
 async function clickByText(page, text, options = {}) {
@@ -102,10 +121,12 @@ async function clickByText(page, text, options = {}) {
           if (!el) return false;
           el.scrollIntoView({ block: "center", inline: "center" });
           const r = el.getBoundingClientRect();
-          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
-          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
-          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
-          el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
+          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+          el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
           el.click();
           return true;
         }, text);
@@ -139,9 +160,11 @@ async function hoverByText(page, text, options = {}) {
           if (!el) return null;
           el.scrollIntoView({ block: "center", inline: "center" });
           const r = el.getBoundingClientRect();
-          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
-          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
+          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+          return { x, y };
         }, text);
         if (result) {
           try { await page.mouse.move(result.x, result.y); } catch (e) {}
@@ -158,39 +181,7 @@ async function hoverByText(page, text, options = {}) {
   throw new Error(`Elemento para hover não encontrado: ${text}. Texto visível: ${lastSeen}`);
 }
 
-async function waitText(page, text, timeout = 20000) {
-  const started = Date.now();
-  while (Date.now() - started < timeout) {
-    for (const frame of allFrames(page)) {
-      try {
-        const ok = await frame.evaluate(
-          (targetText) => document.body && document.body.innerText && document.body.innerText.includes(targetText),
-          text
-        );
-        if (ok) return true;
-      } catch (e) {}
-    }
-    await wait(300);
-  }
-  throw new Error(`Texto não encontrado: ${text}`);
-}
-
-async function dumpVisibleText(page) {
-  const chunks = [];
-  for (const frame of allFrames(page)) {
-    try {
-      const url = frame.url();
-      const text = await frame.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "");
-      chunks.push(`FRAME ${url}\n${text}`);
-    } catch (e) {}
-  }
-  return chunks.join("\n---\n").slice(0, 3000);
-}
-
 async function hoverGMATRelatoriosPorCoordenada(page) {
-  // No GMAT, o menu antigo fica em div absoluto próximo de left:505px/top:1px,
-  // dentro da área da página. No viewport 1366x768, o centro do item fica
-  // aproximadamente entre x=560 e x=580, y=126.
   const pontos = [
     { x: 570, y: 126 },
     { x: 555, y: 126 },
@@ -198,6 +189,7 @@ async function hoverGMATRelatoriosPorCoordenada(page) {
     { x: 570, y: 120 },
     { x: 570, y: 132 }
   ];
+
   for (const p of pontos) {
     await page.mouse.move(p.x, p.y);
     await wait(900);
@@ -292,13 +284,18 @@ async function atualizarEstoqueGMAT(request, env) {
 
     log("abrindo menu relatórios");
     await wait(1200);
-    let menuAberto = false;
     try {
       await hoverByText(page, "Relatórios", { timeout: 8000 });
-      menuAberto = true;
     } catch (e) {
-      etapas.push({ etapa:"aviso", em:new Date().toISOString(), detalhe:"Não achou Relatórios por texto/frame. Tentando coordenada fixa do menu GMAT." });
-      menuAberto = await hoverGMATRelatoriosPorCoordenada(page);
+      etapas.push({
+        etapa: "aviso",
+        em: new Date().toISOString(),
+        detalhe: "Não achou Relatórios por texto/frame. Tentando coordenada fixa do menu GMAT."
+      });
+      const okCoord = await hoverGMATRelatoriosPorCoordenada(page);
+      if (!okCoord) {
+        throw new Error("Menu Relatórios não abriu por texto nem por coordenada.");
+      }
     }
     await wait(800);
 
@@ -306,11 +303,16 @@ async function atualizarEstoqueGMAT(request, env) {
     try {
       await clickByText(page, relatorio, { timeout: 12000 });
     } catch (e) {
-      etapas.push({ etapa:"aviso", em:new Date().toISOString(), detalhe:"Não clicou relatório por texto após primeira abertura. Reabrindo menu por coordenada." });
+      etapas.push({
+        etapa: "aviso",
+        em: new Date().toISOString(),
+        detalhe: "Não clicou relatório por texto após primeira abertura. Reabrindo menu por coordenada."
+      });
       await hoverGMATRelatoriosPorCoordenada(page);
       await wait(800);
       await clickByText(page, relatorio, { timeout: 15000 });
     }
+
     await Promise.allSettled([
       page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 }),
       waitText(page, "Gerar Planilha", 30000)
@@ -360,13 +362,14 @@ async function atualizarEstoqueGMAT(request, env) {
     let screenshotBase64 = "";
     try {
       if (page) {
-        const shot = await page.screenshot({ encoding: "base64", fullPage: false });
-        screenshotBase64 = shot || "";
+        screenshotBase64 = await page.screenshot({ encoding: "base64", fullPage: false }) || "";
       }
     } catch (s) {}
 
     let textoVisivel = "";
-    try { if (page) textoVisivel = await dumpVisibleText(page); } catch (t) {}
+    try {
+      if (page) textoVisivel = await dumpVisibleText(page);
+    } catch (t) {}
 
     return json({
       ok: false,
@@ -392,7 +395,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v125",
+        versao: "v126",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
