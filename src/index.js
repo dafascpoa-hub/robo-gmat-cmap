@@ -65,67 +65,149 @@ async function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+
+function allFrames(page) {
+  try {
+    return [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
+  } catch (e) {
+    return [page.mainFrame()];
+  }
+}
+
+
+function allFrames(page) {
+  try {
+    return [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
+  } catch (e) {
+    return [page.mainFrame()];
+  }
+}
+
 async function clickByText(page, text, options = {}) {
   const timeoutMs = options.timeout || 15000;
   const started = Date.now();
+  let lastSeen = "";
   while (Date.now() - started < timeoutMs) {
-    const ok = await page.evaluate((targetText) => {
-      const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
-      const wanted = normalize(targetText);
-      const candidates = Array.from(document.querySelectorAll("td,div,a,span,button,input,li"));
-      const el = candidates.find(e => {
-        const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-        const txt = normalize(e.innerText || e.value || e.textContent);
-        return visible && txt.includes(wanted);
-      });
-      if (!el) return false;
-      el.scrollIntoView({ block: "center", inline: "center" });
-      el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-      el.click();
-      return true;
-    }, text);
-    if (ok) return true;
+    for (const frame of allFrames(page)) {
+      try {
+        const ok = await frame.evaluate((targetText) => {
+          const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
+          const wanted = normalize(targetText);
+          const candidates = Array.from(document.querySelectorAll("td,div,a,span,button,input,li,tr"));
+          const el = candidates.find(e => {
+            const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+            const txt = normalize(e.innerText || e.value || e.textContent);
+            return visible && txt.includes(wanted);
+          });
+          if (!el) return false;
+          el.scrollIntoView({ block: "center", inline: "center" });
+          const r = el.getBoundingClientRect();
+          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          el.click();
+          return true;
+        }, text);
+        if (ok) return true;
+      } catch (e) {}
+    }
+    try {
+      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 600) : "");
+    } catch (e) {}
     await wait(300);
   }
-  throw new Error(`Elemento com texto não encontrado: ${text}`);
+  throw new Error(`Elemento com texto não encontrado: ${text}. Texto visível: ${lastSeen}`);
 }
 
 async function hoverByText(page, text, options = {}) {
   const timeoutMs = options.timeout || 15000;
   const started = Date.now();
+  let lastSeen = "";
   while (Date.now() - started < timeoutMs) {
-    const box = await page.evaluate((targetText) => {
-      const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
-      const wanted = normalize(targetText);
-      const candidates = Array.from(document.querySelectorAll("td,div,a,span,button,input,li"));
-      const el = candidates.find(e => {
-        const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-        const txt = normalize(e.innerText || e.value || e.textContent);
-        return visible && txt.includes(wanted);
-      });
-      if (!el) return null;
-      el.scrollIntoView({ block: "center", inline: "center" });
-      const r = el.getBoundingClientRect();
-      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    }, text);
-    if (box) {
-      await page.mouse.move(box.x, box.y);
-      await wait(600);
-      return true;
+    for (const frame of allFrames(page)) {
+      try {
+        const result = await frame.evaluate((targetText) => {
+          const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
+          const wanted = normalize(targetText);
+          const candidates = Array.from(document.querySelectorAll("td,div,a,span,button,input,li,tr"));
+          const el = candidates.find(e => {
+            const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+            const txt = normalize(e.innerText || e.value || e.textContent);
+            return visible && txt.includes(wanted);
+          });
+          if (!el) return null;
+          el.scrollIntoView({ block: "center", inline: "center" });
+          const r = el.getBoundingClientRect();
+          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: r.left + r.width/2, clientY: r.top + r.height/2 }));
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }, text);
+        if (result) {
+          try { await page.mouse.move(result.x, result.y); } catch (e) {}
+          await wait(1200);
+          return true;
+        }
+      } catch (e) {}
     }
+    try {
+      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 600) : "");
+    } catch (e) {}
     await wait(300);
   }
-  throw new Error(`Elemento para hover não encontrado: ${text}`);
+  throw new Error(`Elemento para hover não encontrado: ${text}. Texto visível: ${lastSeen}`);
 }
 
 async function waitText(page, text, timeout = 20000) {
-  await page.waitForFunction(
-    (targetText) => document.body && document.body.innerText && document.body.innerText.includes(targetText),
-    { timeout },
-    text
-  );
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    for (const frame of allFrames(page)) {
+      try {
+        const ok = await frame.evaluate(
+          (targetText) => document.body && document.body.innerText && document.body.innerText.includes(targetText),
+          text
+        );
+        if (ok) return true;
+      } catch (e) {}
+    }
+    await wait(300);
+  }
+  throw new Error(`Texto não encontrado: ${text}`);
+}
+
+async function dumpVisibleText(page) {
+  const chunks = [];
+  for (const frame of allFrames(page)) {
+    try {
+      const url = frame.url();
+      const text = await frame.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "");
+      chunks.push(`FRAME ${url}\n${text}`);
+    } catch (e) {}
+  }
+  return chunks.join("\n---\n").slice(0, 3000);
+}
+
+async function hoverGMATRelatoriosPorCoordenada(page) {
+  // No GMAT, o menu antigo fica em div absoluto próximo de left:505px/top:1px,
+  // dentro da área da página. No viewport 1366x768, o centro do item fica
+  // aproximadamente entre x=560 e x=580, y=126.
+  const pontos = [
+    { x: 570, y: 126 },
+    { x: 555, y: 126 },
+    { x: 585, y: 126 },
+    { x: 570, y: 120 },
+    { x: 570, y: 132 }
+  ];
+  for (const p of pontos) {
+    await page.mouse.move(p.x, p.y);
+    await wait(900);
+    const apareceu = await page.evaluate(() => {
+      const txt = document.body ? document.body.innerText || "" : "";
+      return txt.includes("2085 - Geração Planilha Estoque") || txt.includes("Geração Planilha Estoque");
+    }).catch(() => false);
+    if (apareceu) return true;
+  }
+  return false;
 }
 
 async function atualizarEstoqueGMAT(request, env) {
@@ -209,12 +291,26 @@ async function atualizarEstoqueGMAT(request, env) {
     ]);
 
     log("abrindo menu relatórios");
-    await wait(900);
-    await hoverByText(page, "Relatórios", { timeout: 20000 });
-    await wait(500);
+    await wait(1200);
+    let menuAberto = false;
+    try {
+      await hoverByText(page, "Relatórios", { timeout: 8000 });
+      menuAberto = true;
+    } catch (e) {
+      etapas.push({ etapa:"aviso", em:new Date().toISOString(), detalhe:"Não achou Relatórios por texto/frame. Tentando coordenada fixa do menu GMAT." });
+      menuAberto = await hoverGMATRelatoriosPorCoordenada(page);
+    }
+    await wait(800);
 
     log("selecionando relatório 2085");
-    await clickByText(page, relatorio, { timeout: 20000 });
+    try {
+      await clickByText(page, relatorio, { timeout: 12000 });
+    } catch (e) {
+      etapas.push({ etapa:"aviso", em:new Date().toISOString(), detalhe:"Não clicou relatório por texto após primeira abertura. Reabrindo menu por coordenada." });
+      await hoverGMATRelatoriosPorCoordenada(page);
+      await wait(800);
+      await clickByText(page, relatorio, { timeout: 15000 });
+    }
     await Promise.allSettled([
       page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 }),
       waitText(page, "Gerar Planilha", 30000)
@@ -269,11 +365,15 @@ async function atualizarEstoqueGMAT(request, env) {
       }
     } catch (s) {}
 
+    let textoVisivel = "";
+    try { if (page) textoVisivel = await dumpVisibleText(page); } catch (t) {}
+
     return json({
       ok: false,
       codigoJob,
       erro: e && e.message ? e.message : String(e),
       etapas,
+      textoVisivel,
       screenshotBase64
     }, 500);
   } finally {
