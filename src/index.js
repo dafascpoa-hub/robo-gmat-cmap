@@ -95,28 +95,29 @@ async function dumpVisibleText(page) {
   for (const frame of allFrames(page)) {
     try {
       const url = frame.url();
-      const text = await frame.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "");
+      const text = await frame.evaluate(() => document.body ? document.body.innerText.slice(0, 1400) : "");
       chunks.push(`FRAME ${url}\n${text}`);
     } catch (e) {}
   }
-  return chunks.join("\n---\n").slice(0, 3000);
+  return chunks.join("\n---\n").slice(0, 3500);
 }
 
 async function clickByText(page, text, options = {}) {
   const timeoutMs = options.timeout || 15000;
+  const exact = !!options.exact;
   const started = Date.now();
   let lastSeen = "";
   while (Date.now() - started < timeoutMs) {
     for (const frame of allFrames(page)) {
       try {
-        const ok = await frame.evaluate((targetText) => {
+        const ok = await frame.evaluate(({ targetText, exact }) => {
           const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
           const wanted = normalize(targetText);
           const candidates = Array.from(document.querySelectorAll("td,div,a,span,button,input,li,tr"));
           const el = candidates.find(e => {
             const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
             const txt = normalize(e.innerText || e.value || e.textContent);
-            return visible && txt.includes(wanted);
+            return visible && (exact ? txt === wanted : txt.includes(wanted));
           });
           if (!el) return false;
           el.scrollIntoView({ block: "center", inline: "center" });
@@ -129,12 +130,12 @@ async function clickByText(page, text, options = {}) {
           el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
           el.click();
           return true;
-        }, text);
+        }, { targetText: text, exact });
         if (ok) return true;
       } catch (e) {}
     }
     try {
-      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 600) : "");
+      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 800) : "");
     } catch (e) {}
     await wait(300);
   }
@@ -174,11 +175,72 @@ async function hoverByText(page, text, options = {}) {
       } catch (e) {}
     }
     try {
-      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 600) : "");
+      lastSeen = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 800) : "");
     } catch (e) {}
     await wait(300);
   }
   throw new Error(`Elemento para hover não encontrado: ${text}. Texto visível: ${lastSeen}`);
+}
+
+async function clickPerfilGMAT(page, perfil) {
+  // A tela de perfil do GMAT é uma tabela antiga. Clicar em qualquer texto parecido
+  // pode acertar outra linha; por isso tentamos primeiro a célula exata SMAS.
+  const tentativas = [
+    () => clickByText(page, perfil, { timeout: 8000, exact: true }),
+    () => clickByText(page, perfil, { timeout: 8000 }),
+    async () => {
+      const clicked = await page.evaluate((perfil) => {
+        const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+        const alvo = norm(perfil);
+        const cells = Array.from(document.querySelectorAll("td"));
+        const td = cells.find(c => norm(c.textContent) === alvo);
+        if (!td) return false;
+        const tr = td.closest("tr") || td;
+        tr.scrollIntoView({ block: "center", inline: "center" });
+        const r = tr.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        tr.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
+        tr.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y }));
+        tr.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+        tr.click();
+        td.click();
+        return true;
+      }, perfil);
+      if (!clicked) throw new Error("Célula exata do perfil não localizada por script.");
+      return true;
+    },
+    async () => {
+      // coordenada aproximada da segunda linha de perfil, conforme tela enviada.
+      await page.mouse.click(730, 468);
+      return true;
+    }
+  ];
+
+  let ultimoErro = "";
+  for (const tentativa of tentativas) {
+    try {
+      await Promise.allSettled([
+        tentativa(),
+        page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
+      ]);
+      await wait(1200);
+      const saiuPerfil = await page.evaluate(() => {
+        const txt = document.body ? document.body.innerText || "" : "";
+        return txt.includes("Relatórios") || txt.includes("Estoque") || txt.includes("Operações Estoque") || txt.includes("Gmat");
+      }).catch(() => false);
+      const aindaPerfil = await page.evaluate(() => {
+        const txt = document.body ? document.body.innerText || "" : "";
+        return txt.includes("SELEÇÃO DE PERFIL") || txt.includes("ÓRGÃO");
+      }).catch(() => false);
+      if (saiuPerfil && !aindaPerfil) return true;
+      if (saiuPerfil && !String(await page.url()).includes("login.do")) return true;
+      ultimoErro = "Clique executado, mas a tela de seleção de perfil continuou visível.";
+    } catch (e) {
+      ultimoErro = e && e.message ? e.message : String(e);
+    }
+  }
+  throw new Error("Não foi possível selecionar o perfil GMAT. " + ultimoErro);
 }
 
 async function hoverGMATRelatoriosPorCoordenada(page) {
@@ -276,11 +338,17 @@ async function atualizarEstoqueGMAT(request, env) {
     ]);
 
     log("selecionando perfil");
+    await waitText(page, "SELEÇÃO DE PERFIL", 30000).catch(() => {});
     await waitText(page, perfil, 30000);
-    await Promise.allSettled([
-      clickByText(page, perfil, { timeout: 20000 }),
-      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
-    ]);
+    await clickPerfilGMAT(page, perfil);
+
+    log("confirmando tela principal");
+    try {
+      await waitText(page, "Relatórios", 20000);
+    } catch (e) {
+      const txt = await dumpVisibleText(page);
+      throw new Error("Após selecionar o perfil, a tela principal do GMAT não foi confirmada. " + txt.slice(0, 900));
+    }
 
     log("abrindo menu relatórios");
     await wait(1200);
@@ -395,7 +463,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v126",
+        versao: "v127",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
