@@ -225,17 +225,26 @@ async function clickPerfilGMAT(page, perfil) {
         page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
       ]);
       await wait(1200);
-      const saiuPerfil = await page.evaluate(() => {
+      const estado = await page.evaluate(() => {
         const txt = document.body ? document.body.innerText || "" : "";
-        return txt.includes("Relatórios") || txt.includes("Estoque") || txt.includes("Operações Estoque") || txt.includes("Gmat");
-      }).catch(() => false);
-      const aindaPerfil = await page.evaluate(() => {
-        const txt = document.body ? document.body.innerText || "" : "";
-        return txt.includes("SELEÇÃO DE PERFIL") || txt.includes("ÓRGÃO");
-      }).catch(() => false);
-      if (saiuPerfil && !aindaPerfil) return true;
-      if (saiuPerfil && !String(await page.url()).includes("login.do")) return true;
-      ultimoErro = "Clique executado, mas a tela de seleção de perfil continuou visível.";
+        return {
+          texto: txt.slice(0, 1200),
+          temMenuPrincipal:
+            txt.includes("Relatórios") &&
+            txt.includes("Operações Estoque") &&
+            txt.includes("Materiais"),
+          temIndex:
+            String(location.href || "").includes("index.jsp"),
+          aindaPerfil:
+            txt.includes("SELEÇÃO DE PERFIL") || txt.includes("ÓRGÃO")
+        };
+      }).catch(() => ({ texto:"", temMenuPrincipal:false, temIndex:false, aindaPerfil:false }));
+
+      // No GMAT antigo pode sobrar texto de frame/cache. Se o menu principal apareceu,
+      // a seleção do perfil foi concluída, mesmo que algum texto antigo continue no DOM.
+      if (estado.temMenuPrincipal || estado.temIndex) return true;
+
+      ultimoErro = "Clique executado, mas o menu principal do GMAT não apareceu. Texto visto: " + estado.texto.slice(0, 500);
     } catch (e) {
       ultimoErro = e && e.message ? e.message : String(e);
     }
@@ -463,7 +472,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v127",
+        versao: "v128",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
