@@ -273,6 +273,39 @@ async function hoverGMATRelatoriosPorCoordenada(page) {
   return false;
 }
 
+async function clickGMATRelatorio2085PorCoordenada(page) {
+  // Fallback para menu legado do GMAT.
+  // Com viewport 1366x768, o menu Relatórios fica por volta de x=570 y=126,
+  // e o item 2085 aparece na sexta linha do submenu, por volta de x=735 y=252.
+  const tentativas = [
+    { menuX: 570, menuY: 126, itemX: 740, itemY: 253 },
+    { menuX: 555, menuY: 126, itemX: 735, itemY: 253 },
+    { menuX: 585, menuY: 126, itemX: 760, itemY: 253 },
+    { menuX: 570, menuY: 132, itemX: 740, itemY: 258 },
+    { menuX: 570, menuY: 120, itemX: 740, itemY: 248 }
+  ];
+
+  for (const t of tentativas) {
+    await page.mouse.move(t.menuX, t.menuY);
+    await wait(900);
+    await page.mouse.move(t.itemX, t.itemY);
+    await wait(250);
+    await page.mouse.click(t.itemX, t.itemY);
+    await wait(1800);
+
+    const saiu = await page.evaluate(() => {
+      const txt = document.body ? document.body.innerText || "" : "";
+      return txt.includes("Geração de Informações de Materiais em Planilha") ||
+             txt.includes("Critérios de Pesquisa") ||
+             txt.includes("Gerar Planilha") ||
+             txt.includes("Almoxarifado");
+    }).catch(() => false);
+
+    if (saiu) return true;
+  }
+  return false;
+}
+
 async function atualizarEstoqueGMAT(request, env) {
   if (!assertToken(request, env)) {
     return json({ ok: false, erro: "Token inválido ou ausente." }, 401);
@@ -383,11 +416,19 @@ async function atualizarEstoqueGMAT(request, env) {
       etapas.push({
         etapa: "aviso",
         em: new Date().toISOString(),
-        detalhe: "Não clicou relatório por texto após primeira abertura. Reabrindo menu por coordenada."
+        detalhe: "Não clicou relatório por texto após primeira abertura. Reabrindo menu por coordenada e tentando clique direto no item 2085."
       });
       await hoverGMATRelatoriosPorCoordenada(page);
       await wait(800);
-      await clickByText(page, relatorio, { timeout: 15000 });
+
+      try {
+        await clickByText(page, relatorio, { timeout: 6000 });
+      } catch (e2) {
+        const okCoordItem = await clickGMATRelatorio2085PorCoordenada(page);
+        if (!okCoordItem) {
+          throw new Error("Não foi possível clicar no relatório 2085 por texto nem por coordenada. " + (e2 && e2.message ? e2.message : String(e2)));
+        }
+      }
     }
 
     await Promise.allSettled([
@@ -472,7 +513,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v128",
+        versao: "v129",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
