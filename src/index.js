@@ -624,11 +624,17 @@ async function atualizarEstoqueGMAT(request, env) {
       throw new Error("Relatório 2085 não confirmado após clique. Texto visível: " + txt.slice(0, 900));
     }
 
+    log("baixando planilha por POST direto");
+    const direto2085 = await baixarPlanilha2085PostDireto(page, etapas);
+    if (direto2085) {
+      captured = direto2085;
+    }
+
     log("gerando planilha");
     const paginasAntes = await browser.pages().catch(() => []);
     for (const pg of paginasAntes) await anexarCapturaArquivo(pg, "pagina-existente");
 
-    const clicouGerar = await clickGerarPlanilhaEmQualquerFrame(page);
+    const clicouGerar = captured ? true : await clickGerarPlanilhaEmQualquerFrame(page);
     if (!clicouGerar) {
       const txt = await dumpVisibleText(page);
       throw new Error("Botão Gerar Planilha não encontrado em nenhum frame. Texto visível: " + txt.slice(0, 900));
@@ -1093,6 +1099,122 @@ async function tentarVariosSubmits2085(page, etapas) {
 }
 
 
+function paramsPOST2085PadraoGMAT() {
+  const params = new URLSearchParams();
+
+  // Capturado manualmente via DevTools / Copy as cURL no GMAT em 03/08/2026.
+  // Não inclui cookies fixos: os cookies são sempre os da sessão atual do robô.
+  params.append("perform", "printXLS");
+  params.append("actionForward", "success");
+  params.append("strutsFormName", "gerarInformacoesPlanilhaPesquisaForm");
+  params.append("user", "");
+  params.append("dominio", "");
+  params.append("validate", "true");
+  params.append("printPerform", "printXLS");
+  params.append("pesquisar", "false");
+  params.append("chave", "");
+  params.append("idAlmoxarifado", "br.com.procempa.tesouro.psi.gmat.combo.ComboAlmoxarifado@6b6d4e81");
+  params.append("tipo", "popularCombo");
+  params.append("idOrgao.id", "87");
+  params.append("idAlmoxarifado.id", "845");
+  params.append("filtro.nmIniMaterial", "");
+  params.append("filtro.nmCtmMaterial", "");
+  params.append("idEspCla.id", "");
+  params.append("idSubEspCla.id", "");
+  params.append("filtro.ctrlValidade", "");
+  params.append("idArea.id", "");
+  params.append("idEstante.id", "");
+  params.append("idPrateleira.id", "");
+  params.append("idTipoMaterial.id", "");
+  params.append("filtro.regPreco", "");
+  params.append("filtro.situacao", "");
+  params.append("filtro.dtIniMovEntrada", "");
+  params.append("filtro.dtFimMovEntrada", "");
+  params.append("filtro.dtIniMovSaida", "");
+  params.append("filtro.dtFimMovSaida", "");
+  params.append("filtro.listarMaterialLote", "SIM");
+  params.append("filtro.listarMaterialLote", "");
+  params.append("defaultSearch.pageSize", "0");
+  params.append("defaultSearch.orderField", "");
+  params.append("defaultSearch.orderDirection", "");
+
+  return params;
+}
+
+async function baixarPlanilha2085PostDireto(page, etapas) {
+  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const referer = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const cookie = await getCookiesHeaderDaPagina(page);
+  const body = paramsPOST2085PadraoGMAT().toString();
+
+  etapas.push({
+    etapa: "post xls direto",
+    em: new Date().toISOString(),
+    detalhe: `POST direto no endpoint do relatório 2085; campos=${Array.from(paramsPOST2085PadraoGMAT().keys()).length}; cookie=${cookie ? "presente" : "ausente"}`
+  });
+
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    redirect: "follow",
+    headers: {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/vnd.ms-excel,application/octet-stream,*/*;q=0.8",
+      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Cache-Control": "max-age=0",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Cookie": cookie,
+      "Origin": "https://gmat.procempa.com.br",
+      "Referer": referer,
+      "Sec-Fetch-Dest": "frame",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "same-origin",
+      "Sec-Fetch-User": "?1",
+      "Upgrade-Insecure-Requests": "1",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    },
+    body
+  });
+
+  const headers = {};
+  resp.headers.forEach((v, k) => headers[k] = v);
+  const ab = await resp.arrayBuffer();
+  const contentType = String(headers["content-type"] || "");
+  const contentDisposition = String(headers["content-disposition"] || "");
+
+  etapas.push({
+    etapa: "post xls direto resposta",
+    em: new Date().toISOString(),
+    detalhe: `HTTP ${resp.status}; bytes=${ab ? ab.byteLength : 0}; content-type=${contentType}; content-disposition=${contentDisposition}; url=${String(resp.url || "").slice(0, 500)}`
+  });
+
+  const pareceXLS =
+    isExcelContentType(contentType) ||
+    /attachment|xls|xlsx|csv|octet/i.test(contentDisposition) ||
+    (ab && ab.byteLength > 5000 && !contentType.toLowerCase().includes("text/html"));
+
+  if (!resp.ok || !ab || !ab.byteLength || !pareceXLS) {
+    let amostra = "";
+    try {
+      amostra = new TextDecoder("utf-8").decode(ab.slice(0, 1200));
+    } catch (e) {}
+    etapas.push({
+      etapa: "post xls direto não capturou arquivo",
+      em: new Date().toISOString(),
+      detalhe: `Resposta não parece XLS. Amostra: ${amostra.slice(0, 1000)}`
+    });
+    return null;
+  }
+
+  return {
+    url: resp.url,
+    status: resp.status,
+    headers,
+    arrayBuffer: ab,
+    arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
+    origem: "post-xls-direto-v135"
+  };
+}
+
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1103,7 +1225,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v134",
+        versao: "v135",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
