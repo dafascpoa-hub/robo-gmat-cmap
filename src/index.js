@@ -306,6 +306,99 @@ async function clickGMATRelatorio2085PorCoordenada(page) {
   return false;
 }
 
+async function findFrameBoxByUrl(page, urlPart) {
+  try {
+    return await page.evaluate((urlPart) => {
+      const frames = Array.from(document.querySelectorAll("frame,iframe"));
+      const f = frames.find(el => String(el.src || "").includes(urlPart));
+      if (!f) return null;
+      const r = f.getBoundingClientRect();
+      return { left: r.left, top: r.top, width: r.width, height: r.height, src: f.src };
+    }, urlPart);
+  } catch (e) {
+    return null;
+  }
+}
+
+async function clickGMATRelatorio2085NoFrameCabecalho(page) {
+  // O GMAT usa frames antigos. O menu fica no frame cabecalho.jsp.
+  const frame = allFrames(page).find(f => String(f.url()).includes("cabecalho.jsp"));
+  if (!frame) return false;
+
+  const frameBox = await findFrameBoxByUrl(page, "cabecalho.jsp");
+  if (!frameBox) return false;
+
+  const relBox = await frame.evaluate(() => {
+    const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+    const elems = Array.from(document.querySelectorAll("div,td,span,a"));
+    const el = elems.find(e => {
+      const txt = norm(e.innerText || e.textContent);
+      const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      return visible && txt === "Relatórios";
+    }) || elems.find(e => {
+      const txt = norm(e.innerText || e.textContent);
+      const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      return visible && txt.includes("Relatórios");
+    });
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height, text: norm(el.innerText || el.textContent) };
+  }).catch(() => null);
+
+  if (!relBox) return false;
+
+  const menuX = frameBox.left + relBox.left + Math.max(20, Math.min(relBox.width / 2, relBox.width - 10));
+  const menuY = frameBox.top + relBox.top + Math.max(8, Math.min(relBox.height / 2, relBox.height - 3));
+
+  // Primeiro tenta abrir o submenu por mouse real.
+  await page.mouse.move(menuX, menuY);
+  await wait(700);
+  await page.mouse.move(menuX + 20, menuY + 2);
+  await wait(900);
+
+  // Depois tenta encontrar o item 2085 que pode ter sido criado no próprio frame.
+  const itemBox = await frame.evaluate(() => {
+    const norm = s => String(s || "").replace(/\s+/g, " ").trim();
+    const elems = Array.from(document.querySelectorAll("div,td,span,a"));
+    const el = elems.find(e => {
+      const txt = norm(e.innerText || e.textContent);
+      const visible = !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      return visible && txt.includes("2085") && txt.includes("Geração Planilha Estoque");
+    });
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height, text: norm(el.innerText || el.textContent) };
+  }).catch(() => null);
+
+  if (itemBox) {
+    const itemX = frameBox.left + itemBox.left + Math.max(20, Math.min(itemBox.width / 2, itemBox.width - 10));
+    const itemY = frameBox.top + itemBox.top + Math.max(8, Math.min(itemBox.height / 2, itemBox.height - 3));
+    await page.mouse.move(itemX, itemY);
+    await wait(250);
+    await page.mouse.click(itemX, itemY);
+    await wait(1800);
+  } else {
+    // Se o item não ficou visível para o DOM, usa offset relativo ao próprio menu.
+    // Pela tela real: 2085 é a 6ª linha do submenu, cerca de 127px abaixo do topo do botão Relatórios.
+    const itemX = menuX + 175;
+    const itemY = menuY + 126;
+    await page.mouse.move(itemX, itemY);
+    await wait(250);
+    await page.mouse.click(itemX, itemY);
+    await wait(1800);
+  }
+
+  const saiu = await page.evaluate(() => {
+    const txt = document.body ? document.body.innerText || "" : "";
+    return txt.includes("Geração de Informações de Materiais em Planilha") ||
+           txt.includes("Critérios de Pesquisa") ||
+           txt.includes("Gerar Planilha") ||
+           txt.includes("Almoxarifado");
+  }).catch(() => false);
+
+  return !!saiu;
+}
+
 async function atualizarEstoqueGMAT(request, env) {
   if (!assertToken(request, env)) {
     return json({ ok: false, erro: "Token inválido ou ausente." }, 401);
@@ -424,9 +517,10 @@ async function atualizarEstoqueGMAT(request, env) {
       try {
         await clickByText(page, relatorio, { timeout: 6000 });
       } catch (e2) {
-        const okCoordItem = await clickGMATRelatorio2085PorCoordenada(page);
+        let okCoordItem = await clickGMATRelatorio2085NoFrameCabecalho(page);
+        if (!okCoordItem) okCoordItem = await clickGMATRelatorio2085PorCoordenada(page);
         if (!okCoordItem) {
-          throw new Error("Não foi possível clicar no relatório 2085 por texto nem por coordenada. " + (e2 && e2.message ? e2.message : String(e2)));
+          throw new Error("Não foi possível clicar no relatório 2085 por texto, por frame cabecalho.jsp nem por coordenada. " + (e2 && e2.message ? e2.message : String(e2)));
         }
       }
     }
@@ -513,7 +607,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v129",
+        versao: "v130",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
