@@ -490,21 +490,50 @@ async function atualizarEstoqueGMAT(request, env) {
     page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 768 });
 
-    page.on("response", async (response) => {
+    const paginasMonitoradas = new Set();
+
+    async function anexarCapturaArquivo(pg, origem = "pagina") {
+      if (!pg || paginasMonitoradas.has(pg)) return;
+      paginasMonitoradas.add(pg);
+
       try {
-        if (captured || !isExcelResponse(response)) return;
-        const headers = response.headers();
-        const ab = await response.arrayBuffer();
-        if (!ab || !ab.byteLength) return;
-        captured = {
-          url: response.url(),
-          status: response.status(),
-          headers,
-          arrayBuffer: ab,
-          arquivoNome: parseFileName(headers)
-        };
+        pg.on("response", async (response) => {
+          try {
+            if (captured || !isExcelResponse(response)) return;
+            const headers = response.headers();
+            const ab = await response.arrayBuffer();
+            if (!ab || !ab.byteLength) return;
+            captured = {
+              url: response.url(),
+              status: response.status(),
+              headers,
+              arrayBuffer: ab,
+              arquivoNome: parseFileName(headers),
+              origem
+            };
+          } catch (e) {}
+        });
       } catch (e) {}
-    });
+    }
+
+    await anexarCapturaArquivo(page, "pagina-principal");
+
+    try {
+      browser.on("targetcreated", async (target) => {
+        try {
+          const pg = await target.page();
+          if (pg) {
+            await pg.setViewport({ width: 1366, height: 768 }).catch(() => {});
+            await anexarCapturaArquivo(pg, "popup");
+            etapas.push({
+              etapa: "popup detectado",
+              em: new Date().toISOString(),
+              detalhe: String(pg.url() || target.url() || "").slice(0, 500)
+            });
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
 
     log("acessando GMAT");
     await page.goto(url, { waitUntil: "networkidle0", timeout: 45000 });
@@ -586,6 +615,9 @@ async function atualizarEstoqueGMAT(request, env) {
     }
 
     log("gerando planilha");
+    const paginasAntes = await browser.pages().catch(() => []);
+    for (const pg of paginasAntes) await anexarCapturaArquivo(pg, "pagina-existente");
+
     const clicouGerar = await clickGerarPlanilhaEmQualquerFrame(page);
     if (!clicouGerar) {
       const txt = await dumpVisibleText(page);
@@ -596,15 +628,34 @@ async function atualizarEstoqueGMAT(request, env) {
       page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
     ]);
 
+    log("aguardando popup/download");
     const started = Date.now();
-    while (!captured && Date.now() - started < 45000) {
-      await wait(500);
+    let popupVisto = false;
+    let urlsPaginas = [];
+    while (!captured && Date.now() - started < 90000) {
+      try {
+        const paginas = await browser.pages();
+        urlsPaginas = [];
+        for (const pg of paginas) {
+          await anexarCapturaArquivo(pg, "pagina-ou-popup");
+          urlsPaginas.push(await pg.url().catch(() => ""));
+        }
+        if (paginas.length > paginasAntes.length) popupVisto = true;
+      } catch (e) {}
+      await wait(600);
     }
 
     if (!captured) {
       const title = await page.title().catch(() => "");
-      const text = await page.evaluate(() => document.body ? document.body.innerText.slice(0, 1000) : "").catch(() => "");
-      throw new Error("A planilha não foi capturada. Última página: " + title + " | " + text.slice(0, 300));
+      const text = await dumpVisibleText(page).catch(async () => {
+        return await page.evaluate(() => document.body ? document.body.innerText.slice(0, 1000) : "").catch(() => "");
+      });
+      throw new Error(
+        "A planilha não foi capturada após clicar em Gerar Planilha. " +
+        (popupVisto ? "Popup/janela foi detectado, mas o arquivo não foi interceptado. " : "Nenhum popup novo foi confirmado. ") +
+        "URLs abertas: " + urlsPaginas.filter(Boolean).join(" | ").slice(0, 900) +
+        " | Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
+      );
     }
 
     log("planilha capturada");
@@ -625,6 +676,8 @@ async function atualizarEstoqueGMAT(request, env) {
       arquivoTamanho: tamanho,
       arquivoHash: hash,
       contentType: captured.headers["content-type"] || "application/vnd.ms-excel",
+      origemCaptura: captured.origem || "",
+      urlCaptura: captured.url || "",
       arquivoBase64: base64,
       etapas,
       concluidoEm: new Date().toISOString()
@@ -666,7 +719,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v131",
+        versao: "v132",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
