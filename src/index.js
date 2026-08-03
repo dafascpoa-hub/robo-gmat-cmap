@@ -90,6 +90,70 @@ async function waitText(page, text, timeout = 20000) {
   throw new Error(`Texto não encontrado: ${text}`);
 }
 
+async function pageHasAnyText(page, textos) {
+  const list = Array.isArray(textos) ? textos : [textos];
+  for (const frame of allFrames(page)) {
+    try {
+      const txt = await frame.evaluate(() => document.body ? document.body.innerText || "" : "");
+      if (list.some(t => txt.includes(t))) return true;
+    } catch (e) {}
+  }
+  return false;
+}
+
+async function pageAnyFrameUrlHas(page, trecho) {
+  for (const frame of allFrames(page)) {
+    try {
+      if (String(frame.url() || "").includes(trecho)) return true;
+    } catch (e) {}
+  }
+  return false;
+}
+
+async function confirmarTelaRelatorio2085(page) {
+  if (await pageAnyFrameUrlHas(page, "uc2085")) return true;
+  return pageHasAnyText(page, [
+    "Geração de Informações de Materiais em Planilha",
+    "Critérios de Pesquisa",
+    "Gerar Planilha"
+  ]);
+}
+
+async function clickGerarPlanilhaEmQualquerFrame(page) {
+  const seletores = [
+    'input.buttonToolbar[value="Gerar Planilha"]',
+    'input[value="Gerar Planilha"]',
+    'input[value*="Gerar"]',
+    'input[name="submitAction"]',
+    'button'
+  ];
+
+  for (const frame of allFrames(page)) {
+    for (const sel of seletores) {
+      try {
+        const handles = await frame.$$(sel);
+        for (const h of handles) {
+          const ok = await h.evaluate(el => {
+            const txt = String(el.value || el.innerText || el.textContent || "");
+            const visible = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+            return visible && (!txt || txt.includes("Gerar") || txt.includes("Planilha"));
+          }).catch(() => false);
+          if (!ok) continue;
+          await h.click();
+          return true;
+        }
+      } catch (e) {}
+    }
+  }
+
+  try {
+    await clickByText(page, "Gerar Planilha", { timeout: 8000 });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function dumpVisibleText(page) {
   const chunks = [];
   for (const frame of allFrames(page)) {
@@ -293,14 +357,7 @@ async function clickGMATRelatorio2085PorCoordenada(page) {
     await page.mouse.click(t.itemX, t.itemY);
     await wait(1800);
 
-    const saiu = await page.evaluate(() => {
-      const txt = document.body ? document.body.innerText || "" : "";
-      return txt.includes("Geração de Informações de Materiais em Planilha") ||
-             txt.includes("Critérios de Pesquisa") ||
-             txt.includes("Gerar Planilha") ||
-             txt.includes("Almoxarifado");
-    }).catch(() => false);
-
+    const saiu = await confirmarTelaRelatorio2085(page);
     if (saiu) return true;
   }
   return false;
@@ -388,14 +445,7 @@ async function clickGMATRelatorio2085NoFrameCabecalho(page) {
     await wait(1800);
   }
 
-  const saiu = await page.evaluate(() => {
-    const txt = document.body ? document.body.innerText || "" : "";
-    return txt.includes("Geração de Informações de Materiais em Planilha") ||
-           txt.includes("Critérios de Pesquisa") ||
-           txt.includes("Gerar Planilha") ||
-           txt.includes("Almoxarifado");
-  }).catch(() => false);
-
+  const saiu = await confirmarTelaRelatorio2085(page);
   return !!saiu;
 }
 
@@ -530,10 +580,19 @@ async function atualizarEstoqueGMAT(request, env) {
       waitText(page, "Gerar Planilha", 30000)
     ]);
 
+    if (!(await confirmarTelaRelatorio2085(page))) {
+      const txt = await dumpVisibleText(page);
+      throw new Error("Relatório 2085 não confirmado após clique. Texto visível: " + txt.slice(0, 900));
+    }
+
     log("gerando planilha");
-    await page.waitForSelector('input.buttonToolbar[value="Gerar Planilha"], input[name="submitAction"]', { timeout: 30000 });
+    const clicouGerar = await clickGerarPlanilhaEmQualquerFrame(page);
+    if (!clicouGerar) {
+      const txt = await dumpVisibleText(page);
+      throw new Error("Botão Gerar Planilha não encontrado em nenhum frame. Texto visível: " + txt.slice(0, 900));
+    }
+
     await Promise.allSettled([
-      page.click('input.buttonToolbar[value="Gerar Planilha"], input[name="submitAction"]'),
       page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
     ]);
 
@@ -607,7 +666,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v130",
+        versao: "v131",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
