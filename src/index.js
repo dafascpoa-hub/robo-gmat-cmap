@@ -624,10 +624,18 @@ async function atualizarEstoqueGMAT(request, env) {
       throw new Error("Relatório 2085 não confirmado após clique. Texto visível: " + txt.slice(0, 900));
     }
 
-    log("baixando planilha por POST direto");
-    const direto2085 = await baixarPlanilha2085PostDireto(page, etapas);
-    if (direto2085) {
-      captured = direto2085;
+    log("baixando planilha por POST no contexto do navegador");
+    const browser2085 = await baixarPlanilha2085FetchNoBrowser(page, etapas);
+    if (browser2085) {
+      captured = browser2085;
+    }
+
+    if (!captured) {
+      log("baixando planilha por POST direto");
+      const direto2085 = await baixarPlanilha2085PostDireto(page, etapas);
+      if (direto2085) {
+        captured = direto2085;
+      }
     }
 
     log("gerando planilha");
@@ -1141,6 +1149,135 @@ function paramsPOST2085PadraoGMAT() {
   return params;
 }
 
+
+function arrayBufferFromBase64GMAT(base64) {
+  const bin = atob(String(base64 || ""));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function magicArquivoGMAT(ab) {
+  try {
+    const b = new Uint8Array(ab || new ArrayBuffer(0));
+    if (b.length >= 8 && b[0] === 0xD0 && b[1] === 0xCF && b[2] === 0x11 && b[3] === 0xE0) return "xls-cdf";
+    if (b.length >= 4 && b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04) return "xlsx-zip";
+    if (b.length >= 1 && b[0] === 0x3C) return "html";
+  } catch (e) {}
+  return "desconhecido";
+}
+
+function textoAmostraGMAT(ab, limite = 1600) {
+  try {
+    return new TextDecoder("utf-8").decode((ab || new ArrayBuffer(0)).slice(0, limite));
+  } catch (e) {
+    try { return new TextDecoder("iso-8859-1").decode((ab || new ArrayBuffer(0)).slice(0, limite)); } catch (e2) { return ""; }
+  }
+}
+
+function htmlTemCabecalhoPlanilhaGMAT(texto) {
+  const t = String(texto || "")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ").toLowerCase();
+  return (t.includes("cod mat") || t.includes("codigo mat")) &&
+         t.includes("nome mat") &&
+         t.includes("qtde estoque");
+}
+
+function capturaParecePlanilhaGMAT(ab, headers = {}, url = "") {
+  const ct = String(headers["content-type"] || headers["Content-Type"] || "").toLowerCase();
+  const cd = String(headers["content-disposition"] || headers["Content-Disposition"] || "").toLowerCase();
+  const magic = magicArquivoGMAT(ab);
+  if (magic === "xls-cdf" || magic === "xlsx-zip") return { ok:true, motivo:magic };
+  if (/attachment|\.xls|\.xlsx|octet|excel|spreadsheet/i.test(cd) || isExcelContentType(ct)) return { ok:true, motivo:"headers-excel" };
+  if (magic === "html" || ct.includes("text/html")) {
+    const amostra = textoAmostraGMAT(ab, 2500);
+    if (htmlTemCabecalhoPlanilhaGMAT(amostra)) return { ok:true, motivo:"html-com-cabecalho-gmat" };
+    return { ok:false, motivo:"html-sem-cabecalho-gmat", amostra };
+  }
+  return { ok:false, motivo:"sem-magic-xls", amostra:textoAmostraGMAT(ab, 800) };
+}
+
+async function baixarPlanilha2085FetchNoBrowser(page, etapas) {
+  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const body = paramsPOST2085PadraoGMAT().toString();
+
+  etapas.push({ etapa:"post xls via browser", em:new Date().toISOString(), detalhe:"Executando fetch dentro do contexto autenticado do GMAT para capturar o corpo real da resposta." });
+
+  let resultado = null;
+  const frames = allFrames(page);
+  for (const frame of frames) {
+    try {
+      const frameUrl = String(frame.url() || "");
+      if (!frameUrl.includes("gmat.procempa.com.br")) continue;
+      resultado = await frame.evaluate(async ({ endpoint, body }) => {
+        const resp = await fetch(endpoint, {
+          method: "POST",
+          credentials: "include",
+          redirect: "follow",
+          headers: {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/vnd.ms-excel,application/octet-stream,*/*;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Cache-Control": "max-age=0"
+          },
+          body
+        });
+        const headers = {};
+        resp.headers.forEach((v,k)=>headers[k]=v);
+        const ab = await resp.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        let base64 = "";
+        const chunk = 0x8000;
+        for (let i=0;i<bytes.length;i+=chunk) {
+          let s = "";
+          const part = bytes.subarray(i, i+chunk);
+          for (let j=0;j<part.length;j++) s += String.fromCharCode(part[j]);
+          base64 += btoa(s);
+        }
+        // O loop acima concatena blocos base64 independentes; para evitar corromper, faz conversão única em chunks binários.
+        let binary = "";
+        for (let i=0;i<bytes.length;i+=chunk) {
+          const part = bytes.subarray(i, i+chunk);
+          binary += String.fromCharCode(...part);
+        }
+        base64 = btoa(binary);
+        return { ok: resp.ok, status: resp.status, url: resp.url, headers, bytes: bytes.length, base64 };
+      }, { endpoint, body });
+      break;
+    } catch (e) {
+      etapas.push({ etapa:"post xls via browser erro", em:new Date().toISOString(), detalhe:`Frame ${String(frame.url()||"").slice(0,300)}: ${e && e.message ? e.message : String(e)}` });
+    }
+  }
+
+  if (!resultado) {
+    etapas.push({ etapa:"post xls via browser", em:new Date().toISOString(), detalhe:"Nenhum frame GMAT permitiu executar fetch interno." });
+    return null;
+  }
+
+  const ab = arrayBufferFromBase64GMAT(resultado.base64);
+  const headers = resultado.headers || {};
+  const avaliacao = capturaParecePlanilhaGMAT(ab, headers, resultado.url || endpoint);
+  etapas.push({
+    etapa:"post xls via browser resposta",
+    em:new Date().toISOString(),
+    detalhe:`HTTP ${resultado.status}; bytes=${resultado.bytes}; magic=${magicArquivoGMAT(ab)}; avaliacao=${avaliacao.motivo}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; url=${String(resultado.url||"").slice(0,500)}`
+  });
+
+  if (!resultado.ok || !avaliacao.ok) {
+    etapas.push({ etapa:"post xls via browser não capturou arquivo", em:new Date().toISOString(), detalhe:`${avaliacao.motivo}; amostra=${String(avaliacao.amostra||"").slice(0,1000)}` });
+    return null;
+  }
+
+  return {
+    url: resultado.url,
+    status: resultado.status,
+    headers,
+    arrayBuffer: ab,
+    arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
+    origem: "post-xls-browser-v137"
+  };
+}
+
 async function baixarPlanilha2085PostDireto(page, etapas) {
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const referer = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
@@ -1186,41 +1323,15 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     detalhe: `HTTP ${resp.status}; bytes=${ab ? ab.byteLength : 0}; content-type=${contentType}; content-disposition=${contentDisposition}; url=${String(resp.url || "").slice(0, 500)}`
   });
 
-  const urlResp = String(resp.url || endpoint);
-  const htmlXlsLegado =
-    resp.ok &&
-    urlResp.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do") &&
-    contentType.toLowerCase().includes("text/html") &&
-    ab &&
-    ab.byteLength > 10000;
+  const avaliacao = capturaParecePlanilhaGMAT(ab, headers, resp.url || endpoint);
 
-  const pareceXLS =
-    isExcelContentType(contentType) ||
-    /attachment|xls|xlsx|csv|octet/i.test(contentDisposition) ||
-    (ab && ab.byteLength > 5000 && !contentType.toLowerCase().includes("text/html")) ||
-    htmlXlsLegado;
-
-  if (!resp.ok || !ab || !ab.byteLength || !pareceXLS) {
-    let amostra = "";
-    try {
-      amostra = new TextDecoder("utf-8").decode(ab.slice(0, 1200));
-    } catch (e) {}
+  if (!resp.ok || !ab || !ab.byteLength || !avaliacao.ok) {
     etapas.push({
       etapa: "post xls direto não capturou arquivo",
       em: new Date().toISOString(),
-      detalhe: `Resposta não parece XLS. Amostra: ${amostra.slice(0, 1000)}`
+      detalhe: `Resposta não parece planilha real. magic=${magicArquivoGMAT(ab)}; motivo=${avaliacao.motivo}; amostra=${String(avaliacao.amostra||"").slice(0, 1000)}`
     });
     return null;
-  }
-
-  if (htmlXlsLegado) {
-    headers["content-disposition"] = headers["content-disposition"] || 'attachment; filename="PlanilhaMateriais.xls"';
-    headers["content-type"] = headers["content-type"] || "application/vnd.ms-excel";
-    etapas.push({
-      etapa: "post xls direto aceito como xls legado",
-      em: new Date().toISOString(),
-      detalhe: `GMAT retornou text/html com ${ab.byteLength} bytes no endpoint 2085. Aceito como PlanilhaMateriais.xls por padrão legado do GMAT.`
-    });
   }
 
   return {
@@ -1229,7 +1340,7 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     headers,
     arrayBuffer: ab,
     arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-    origem: htmlXlsLegado ? "post-xls-direto-html-legado-v136" : "post-xls-direto-v136"
+    origem: "post-xls-direto-v137"
   };
 }
 
@@ -1244,7 +1355,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v136",
+        versao: "v137",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
