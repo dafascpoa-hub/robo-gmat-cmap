@@ -1186,10 +1186,19 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     detalhe: `HTTP ${resp.status}; bytes=${ab ? ab.byteLength : 0}; content-type=${contentType}; content-disposition=${contentDisposition}; url=${String(resp.url || "").slice(0, 500)}`
   });
 
+  const urlResp = String(resp.url || endpoint);
+  const htmlXlsLegado =
+    resp.ok &&
+    urlResp.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do") &&
+    contentType.toLowerCase().includes("text/html") &&
+    ab &&
+    ab.byteLength > 10000;
+
   const pareceXLS =
     isExcelContentType(contentType) ||
     /attachment|xls|xlsx|csv|octet/i.test(contentDisposition) ||
-    (ab && ab.byteLength > 5000 && !contentType.toLowerCase().includes("text/html"));
+    (ab && ab.byteLength > 5000 && !contentType.toLowerCase().includes("text/html")) ||
+    htmlXlsLegado;
 
   if (!resp.ok || !ab || !ab.byteLength || !pareceXLS) {
     let amostra = "";
@@ -1204,13 +1213,23 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     return null;
   }
 
+  if (htmlXlsLegado) {
+    headers["content-disposition"] = headers["content-disposition"] || 'attachment; filename="PlanilhaMateriais.xls"';
+    headers["content-type"] = headers["content-type"] || "application/vnd.ms-excel";
+    etapas.push({
+      etapa: "post xls direto aceito como xls legado",
+      em: new Date().toISOString(),
+      detalhe: `GMAT retornou text/html com ${ab.byteLength} bytes no endpoint 2085. Aceito como PlanilhaMateriais.xls por padrão legado do GMAT.`
+    });
+  }
+
   return {
     url: resp.url,
     status: resp.status,
     headers,
     arrayBuffer: ab,
     arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-    origem: "post-xls-direto-v135"
+    origem: htmlXlsLegado ? "post-xls-direto-html-legado-v136" : "post-xls-direto-v136"
   };
 }
 
@@ -1225,7 +1244,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v135",
+        versao: "v136",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
