@@ -686,6 +686,12 @@ async function atualizarEstoqueGMAT(request, env) {
     }
 
     if (!captured) {
+      log("tentando post por formulário/navegação real");
+      const capturadoFormReal = await submeterPOST2085ComoFormularioReal(page, browser, etapas);
+      if (capturadoFormReal) captured = capturadoFormReal;
+    }
+
+    if (!captured) {
       const title = await page.title().catch(() => "");
       const text = await dumpVisibleText(page).catch(async () => {
         return await page.evaluate(() => document.body ? document.body.innerText.slice(0, 1000) : "").catch(() => "");
@@ -1345,6 +1351,135 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
 }
 
 
+async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
+  // GMAT legado: o download real ocorre por navegação de formulário, não por fetch.
+  // Esta rotina cria um formulário POST real dentro do contexto do GMAT e submete
+  // para um target oculto, capturando a resposta de rede binária.
+  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const params = paramsPOST2085PadraoGMAT();
+
+  let capturado = null;
+  const paginas = await browser.pages().catch(() => [page]);
+
+  async function anexar(pg, origem) {
+    try {
+      pg.on("response", async (response) => {
+        try {
+          if (capturado) return;
+          const url = String(response.url() || "");
+          if (!url.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do")) return;
+
+          const headers = response.headers();
+          const ab = await response.arrayBuffer();
+          const magic = ab && ab.byteLength >= 8
+            ? Array.from(new Uint8Array(ab.slice(0, 8))).map(b => b.toString(16).padStart(2, "0")).join(" ")
+            : "";
+
+          const ct = String(headers["content-type"] || "");
+          const cd = String(headers["content-disposition"] || "");
+          const xlsBinario = magic.startsWith("d0 cf 11 e0");
+          const pareceArquivo = xlsBinario ||
+            isExcelContentType(ct) ||
+            /attachment|xls|xlsx|octet/i.test(cd) ||
+            (ab && ab.byteLength > 80000 && !ct.toLowerCase().includes("text/html"));
+
+          etapas.push({
+            etapa: "form post navegação resposta",
+            em: new Date().toISOString(),
+            detalhe: `origem=${origem}; HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magic}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}`
+          });
+
+          if (response.ok() && pareceArquivo && ab && ab.byteLength) {
+            capturado = {
+              url,
+              status: response.status(),
+              headers,
+              arrayBuffer: ab,
+              arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
+              origem: xlsBinario ? "form-post-navegacao-xls-binario-v138" : "form-post-navegacao-v138"
+            };
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  for (const pg of paginas) await anexar(pg, "pagina-existente");
+
+  try {
+    browser.on("targetcreated", async (target) => {
+      try {
+        const pg = await target.page();
+        if (pg) await anexar(pg, "targetcreated");
+      } catch (e) {}
+    });
+  } catch (e) {}
+
+  etapas.push({
+    etapa: "form post navegação",
+    em: new Date().toISOString(),
+    detalhe: `Criando formulário POST real para endpoint 2085 com ${Array.from(params.keys()).length} campos.`
+  });
+
+  // Executa dentro de um frame/página GMAT. Preferir frame uc2085; senão página principal.
+  let frameAlvo = allFrames(page).find(f => String(f.url() || "").includes("uc2085")) ||
+                  allFrames(page).find(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")) ||
+                  page.mainFrame();
+
+  await frameAlvo.evaluate((endpoint, entries) => {
+    const old = document.getElementById("__portal_da_form_2085_v138");
+    if (old) old.remove();
+
+    let iframe = document.getElementById("__portal_da_target_2085_v138");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.name = "__portal_da_target_2085_v138";
+      iframe.id = "__portal_da_target_2085_v138";
+      iframe.style.position = "fixed";
+      iframe.style.left = "-9999px";
+      iframe.style.top = "-9999px";
+      iframe.style.width = "10px";
+      iframe.style.height = "10px";
+      document.body.appendChild(iframe);
+    }
+
+    const form = document.createElement("form");
+    form.id = "__portal_da_form_2085_v138";
+    form.method = "POST";
+    form.action = endpoint;
+    form.target = "__portal_da_target_2085_v138";
+    form.enctype = "application/x-www-form-urlencoded";
+    form.acceptCharset = "UTF-8";
+
+    for (const [k, v] of entries) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = k;
+      input.value = v;
+      form.appendChild(input);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+  }, endpoint, Array.from(params.entries()));
+
+  const started = Date.now();
+  while (!capturado && Date.now() - started < 60000) {
+    await wait(500);
+  }
+
+  if (capturado) return capturado;
+
+  etapas.push({
+    etapa: "form post navegação não capturou",
+    em: new Date().toISOString(),
+    detalhe: "Formulário real foi submetido, mas nenhuma resposta reconhecida como XLS binário/arquivo foi capturada em 60s."
+  });
+
+  return null;
+}
+
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1355,7 +1490,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v137",
+        versao: "v138",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
