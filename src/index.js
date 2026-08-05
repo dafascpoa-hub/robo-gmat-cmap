@@ -1421,47 +1421,103 @@ async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
     detalhe: `Criando formulário POST real para endpoint 2085 com ${Array.from(params.keys()).length} campos.`
   });
 
-  // Executa dentro de um frame/página GMAT. Preferir frame uc2085; senão página principal.
-  let frameAlvo = allFrames(page).find(f => String(f.url() || "").includes("uc2085")) ||
-                  allFrames(page).find(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")) ||
-                  page.mainFrame();
+  // Executa dentro de um frame/página GMAT, mas sem reaproveitar referência antiga.
+  // O GMAT é legado e recarrega/destaca frames durante a operação; por isso a v139
+  // procura frames atuais no momento exato do submit e tenta novamente se necessário.
+  async function executarSubmitEmFrameAtual(tentativa) {
+    const framesAgora = allFrames(page);
+    const candidatos = [
+      ...framesAgora.filter(f => String(f.url() || "").includes("uc2085")),
+      ...framesAgora.filter(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")),
+      page.mainFrame()
+    ];
 
-  await frameAlvo.evaluate((endpoint, entries) => {
-    const old = document.getElementById("__portal_da_form_2085_v138");
-    if (old) old.remove();
+    let ultimoErro = "";
+    for (const frameAtual of candidatos) {
+      try {
+        if (!frameAtual) continue;
+        try {
+          if (typeof frameAtual.isDetached === "function" && frameAtual.isDetached()) continue;
+        } catch (e) {}
 
-    let iframe = document.getElementById("__portal_da_target_2085_v138");
-    if (!iframe) {
-      iframe = document.createElement("iframe");
-      iframe.name = "__portal_da_target_2085_v138";
-      iframe.id = "__portal_da_target_2085_v138";
-      iframe.style.position = "fixed";
-      iframe.style.left = "-9999px";
-      iframe.style.top = "-9999px";
-      iframe.style.width = "10px";
-      iframe.style.height = "10px";
-      document.body.appendChild(iframe);
+        await frameAtual.evaluate((endpoint, entries, tentativa) => {
+          if (!document || !document.body) throw new Error("document.body indisponível");
+
+          const formId = "__portal_da_form_2085_v139_" + tentativa;
+          const targetId = "__portal_da_target_2085_v139_" + tentativa;
+
+          const old = document.getElementById(formId);
+          if (old) old.remove();
+
+          let iframe = document.getElementById(targetId);
+          if (!iframe) {
+            iframe = document.createElement("iframe");
+            iframe.name = targetId;
+            iframe.id = targetId;
+            iframe.style.position = "fixed";
+            iframe.style.left = "-9999px";
+            iframe.style.top = "-9999px";
+            iframe.style.width = "10px";
+            iframe.style.height = "10px";
+            document.body.appendChild(iframe);
+          }
+
+          const form = document.createElement("form");
+          form.id = formId;
+          form.method = "POST";
+          form.action = endpoint;
+          form.target = targetId;
+          form.enctype = "application/x-www-form-urlencoded";
+          form.acceptCharset = "UTF-8";
+
+          for (const [k, v] of entries) {
+            const input = document.createElement("input");
+            input.type = "hidden";
+            input.name = k;
+            input.value = v;
+            form.appendChild(input);
+          }
+
+          document.body.appendChild(form);
+          form.submit();
+        }, endpoint, Array.from(params.entries()), tentativa);
+
+        etapas.push({
+          etapa: "form post navegação submit",
+          em: new Date().toISOString(),
+          detalhe: `Submit real executado no frame ${String(frameAtual.url() || "").slice(0, 500)}`
+        });
+        return true;
+      } catch (e) {
+        ultimoErro = e && e.message ? e.message : String(e);
+        etapas.push({
+          etapa: "form post navegação frame falhou",
+          em: new Date().toISOString(),
+          detalhe: `${String(frameAtual && frameAtual.url ? frameAtual.url() : "").slice(0, 400)} => ${ultimoErro}`
+        });
+        await wait(500);
+      }
     }
+    throw new Error("Não foi possível executar submit em nenhum frame atual. Último erro: " + ultimoErro);
+  }
 
-    const form = document.createElement("form");
-    form.id = "__portal_da_form_2085_v138";
-    form.method = "POST";
-    form.action = endpoint;
-    form.target = "__portal_da_target_2085_v138";
-    form.enctype = "application/x-www-form-urlencoded";
-    form.acceptCharset = "UTF-8";
-
-    for (const [k, v] of entries) {
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = k;
-      input.value = v;
-      form.appendChild(input);
+  let submitExecutado = false;
+  for (let tentativa = 1; tentativa <= 3 && !submitExecutado; tentativa++) {
+    try {
+      submitExecutado = await executarSubmitEmFrameAtual(tentativa);
+    } catch (e) {
+      etapas.push({
+        etapa: "form post navegação tentativa falhou",
+        em: new Date().toISOString(),
+        detalhe: `tentativa ${tentativa}: ${e && e.message ? e.message : String(e)}`
+      });
+      await wait(800);
     }
+  }
 
-    document.body.appendChild(form);
-    form.submit();
-  }, endpoint, Array.from(params.entries()));
+  if (!submitExecutado) {
+    throw new Error("Não foi possível submeter formulário real do relatório 2085 após 3 tentativas.");
+  }
 
   const started = Date.now();
   while (!capturado && Date.now() - started < 60000) {
@@ -1490,7 +1546,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v138",
+        versao: "v139",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
