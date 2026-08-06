@@ -315,7 +315,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v143"
+        origem: "clique-real-response-v144"
       });
       etapas.push({
         etapa: ok ? "response do clique contém XLS real" : "response do clique não era XLS",
@@ -328,53 +328,164 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // Captura no nível CDP, antes de o Chromium transformar a resposta em download.
+  // v144: NÃO intercepta a resposta com Fetch.enable.
+  // A v143 provou que o POST já está correto; agora observamos a rede e o evento
+  // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
+  const requestsCDP = new Map();
+  let downloadInfo = null;
+  let downloadResolver;
+  const downloadPromise = new Promise(resolve => { downloadResolver = resolve; });
+
   try {
     cdp = await page.target().createCDPSession();
-    await cdp.send("Network.enable").catch(() => {});
-    await cdp.send("Fetch.enable", {
-      patterns: [{ urlPattern: "*gerarInformacoesPlanilhaPesquisa.do*", requestStage: "Response" }]
-    });
+    await cdp.send("Network.enable", {
+      maxTotalBufferSize: 20 * 1024 * 1024,
+      maxResourceBufferSize: 10 * 1024 * 1024,
+      maxPostDataSize: 2 * 1024 * 1024
+    }).catch(() => cdp.send("Network.enable"));
 
-    cdp.on("Fetch.requestPaused", async ev => {
-      const url = String(ev.request && ev.request.url || "");
-      const metodo = String(ev.request && ev.request.method || "").toUpperCase();
-      if (!url.includes(endpointTrecho) || metodo !== "POST" || !ev.responseStatusCode) {
-        try { await cdp.send("Fetch.continueRequest", { requestId: ev.requestId }); } catch (e) {}
-        return;
-      }
+    // Não é obrigatório para a captura, mas habilita eventos de download quando suportado.
+    try {
+      await cdp.send("Browser.setDownloadBehavior", {
+        behavior: "allow",
+        eventsEnabled: true
+      });
+    } catch (e) {
+      etapas.push({
+        etapa: "download behavior não configurado",
+        em: new Date().toISOString(),
+        detalhe: e && e.message ? e.message : String(e)
+      });
+    }
 
-      let headers = headersCDPToObject(ev.responseHeaders || []);
+    cdp.on("Network.requestWillBeSent", ev => {
       try {
-        const body = await cdp.send("Fetch.getResponseBody", { requestId: ev.requestId });
-        const bytes = body.base64Encoded ? bytesFromBase64(body.body) : new TextEncoder().encode(body.body || "");
-        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        const ok = aceitar({
+        const url = String(ev.request && ev.request.url || "");
+        const metodo = String(ev.request && ev.request.method || "").toUpperCase();
+        if (!url.includes(endpointTrecho) || metodo !== "POST") return;
+        requestsCDP.set(ev.requestId, {
           url,
-          status: ev.responseStatusCode,
-          headers,
-          arrayBuffer: ab,
-          arquivoNome: parseFileName(headers),
-          origem: "clique-real-cdp-response-v143"
+          method: metodo,
+          postData: textValue(ev.request && ev.request.postData),
+          headers: ev.request && ev.request.headers ? ev.request.headers : {}
         });
         etapas.push({
-          etapa: ok ? "CDP capturou XLS real" : "CDP interceptou resposta não-XLS",
+          etapa: "POST real observado sem interceptação",
           em: new Date().toISOString(),
-          detalhe: `HTTP ${ev.responseStatusCode}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; post=${textValue(ev.request && ev.request.postData).slice(0, 1400)}`
+          detalhe: JSON.stringify({
+            url,
+            method: metodo,
+            headers: ev.request && ev.request.headers ? ev.request.headers : {},
+            post: textValue(ev.request && ev.request.postData).slice(0, 1600)
+          }).slice(0, 3500)
         });
+      } catch (e) {}
+    });
+
+    cdp.on("Network.requestWillBeSentExtraInfo", ev => {
+      try {
+        const req = requestsCDP.get(ev.requestId);
+        if (!req) return;
+        const headers = ev.headers || {};
+        etapas.push({
+          etapa: "headers efetivos do POST",
+          em: new Date().toISOString(),
+          detalhe: JSON.stringify(headers).slice(0, 3500)
+        });
+      } catch (e) {}
+    });
+
+    cdp.on("Network.responseReceived", async ev => {
+      try {
+        const req = requestsCDP.get(ev.requestId);
+        if (!req) return;
+        const resp = ev.response || {};
+        const headers = {};
+        for (const [k,v] of Object.entries(resp.headers || {})) headers[String(k).toLowerCase()] = textValue(v);
+
+        // Network.getResponseBody observa sem pausar/interceptar a resposta.
+        let ab = null;
+        let bodyErro = "";
+        try {
+          const body = await cdp.send("Network.getResponseBody", { requestId: ev.requestId });
+          const bytes = body && body.base64Encoded
+            ? bytesFromBase64(body.body)
+            : new TextEncoder().encode(body && body.body || "");
+          ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        } catch (e) {
+          bodyErro = e && e.message ? e.message : String(e);
+        }
+
+        if (ab && ab.byteLength) {
+          const ok = aceitar({
+            url: String(resp.url || req.url || endpoint),
+            status: Number(resp.status || 0),
+            headers,
+            arrayBuffer: ab,
+            arquivoNome: parseFileName(headers),
+            origem: "network-response-v144"
+          });
+          etapas.push({
+            etapa: ok ? "Network capturou XLS real" : "Network observou resposta não-XLS",
+            em: new Date().toISOString(),
+            detalhe: `HTTP ${resp.status || 0}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
+          });
+        } else {
+          etapas.push({
+            etapa: "Network viu resposta mas corpo não ficou disponível",
+            em: new Date().toISOString(),
+            detalhe: `HTTP ${resp.status || 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; erro=${bodyErro}`
+          });
+        }
       } catch (e) {
-        etapas.push({ etapa: "CDP leitura resposta falhou", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
-      } finally {
-        try { await cdp.send("Fetch.continueResponse", { requestId: ev.requestId }); }
-        catch (e1) { try { await cdp.send("Fetch.continueRequest", { requestId: ev.requestId }); } catch (e2) {} }
+        etapas.push({
+          etapa: "Network response diagnóstico falhou",
+          em: new Date().toISOString(),
+          detalhe: e && e.message ? e.message : String(e)
+        });
       }
     });
+
+    cdp.on("Browser.downloadWillBegin", ev => {
+      try {
+        downloadInfo = {
+          guid: textValue(ev.guid),
+          url: textValue(ev.url),
+          suggestedFilename: textValue(ev.suggestedFilename)
+        };
+        etapas.push({
+          etapa: "Chromium iniciou download real",
+          em: new Date().toISOString(),
+          detalhe: JSON.stringify(downloadInfo)
+        });
+        try { downloadResolver(downloadInfo); } catch (e) {}
+      } catch (e) {}
+    });
+
+    cdp.on("Browser.downloadProgress", ev => {
+      try {
+        if (!downloadInfo || textValue(ev.guid) !== textValue(downloadInfo.guid)) return;
+        if (ev.state === "completed" || ev.state === "canceled") {
+          etapas.push({
+            etapa: `download ${ev.state}`,
+            em: new Date().toISOString(),
+            detalhe: JSON.stringify({
+              guid: ev.guid,
+              receivedBytes: ev.receivedBytes,
+              totalBytes: ev.totalBytes,
+              state: ev.state
+            })
+          });
+        }
+      } catch (e) {}
+    });
+
   } catch (e) {
     etapas.push({
-      etapa: "CDP indisponível",
+      etapa: "CDP Network indisponível",
       em: new Date().toISOString(),
-      detalhe: "Seguindo com captura normal de response. " + (e && e.message ? e.message : String(e))
+      detalhe: "Seguindo somente com captura normal de response. " + (e && e.message ? e.message : String(e))
     });
   }
 
@@ -417,10 +528,20 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
     const nativo = await submeterFormulario2085Nativo(localizado.frame, "submit-direto").catch(e => ({ok:false,motivo:e.message}));
     etapas.push({ etapa: "submit nativo acionado", em: new Date().toISOString(), detalhe: JSON.stringify(nativo).slice(0, 1900) });
     resultado = await aguardar(30000);
-    return resultado || capturado;
+    if (resultado) return resultado;
+
+    // Se o navegador efetivamente iniciou o download, isso é informação decisiva:
+    // o POST funcionou e o problema restante é somente obter os bytes no Browser Run.
+    if (downloadInfo) {
+      etapas.push({
+        etapa: "download confirmado sem bytes acessíveis",
+        em: new Date().toISOString(),
+        detalhe: JSON.stringify(downloadInfo)
+      });
+    }
+    return capturado;
   } finally {
     try { page.off("response", responseHandler); } catch (e) {}
-    try { if (cdp) await cdp.send("Fetch.disable"); } catch (e) {}
     try { if (cdp) await cdp.detach(); } catch (e) {}
   }
 }
@@ -984,7 +1105,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v143 rejeita o HTML da tela do relatório, registra o POST realmente produzido pelo botão e tenta o submitForm legado e o submit nativo do formulário vivo da sessão atual. " +
+        "A v144 mantém o POST real do formulário, não usa Fetch.enable (que pode interferir no download), observa Network e os eventos nativos de download do Chromium e só aceita bytes que sejam XLS real. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1543,7 +1664,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v143",
+        versao: "v144",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
