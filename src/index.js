@@ -1421,103 +1421,47 @@ async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
     detalhe: `Criando formulário POST real para endpoint 2085 com ${Array.from(params.keys()).length} campos.`
   });
 
-  // Executa dentro de um frame/página GMAT, mas sem reaproveitar referência antiga.
-  // O GMAT é legado e recarrega/destaca frames durante a operação; por isso a v139
-  // procura frames atuais no momento exato do submit e tenta novamente se necessário.
-  async function executarSubmitEmFrameAtual(tentativa) {
-    const framesAgora = allFrames(page);
-    const candidatos = [
-      ...framesAgora.filter(f => String(f.url() || "").includes("uc2085")),
-      ...framesAgora.filter(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")),
-      page.mainFrame()
-    ];
+  // Executa dentro de um frame/página GMAT. Preferir frame uc2085; senão página principal.
+  let frameAlvo = allFrames(page).find(f => String(f.url() || "").includes("uc2085")) ||
+                  allFrames(page).find(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")) ||
+                  page.mainFrame();
 
-    let ultimoErro = "";
-    for (const frameAtual of candidatos) {
-      try {
-        if (!frameAtual) continue;
-        try {
-          if (typeof frameAtual.isDetached === "function" && frameAtual.isDetached()) continue;
-        } catch (e) {}
+  await frameAlvo.evaluate((endpoint, entries) => {
+    const old = document.getElementById("__portal_da_form_2085_v138");
+    if (old) old.remove();
 
-        await frameAtual.evaluate((endpoint, entries, tentativa) => {
-          if (!document || !document.body) throw new Error("document.body indisponível");
-
-          const formId = "__portal_da_form_2085_v139_" + tentativa;
-          const targetId = "__portal_da_target_2085_v139_" + tentativa;
-
-          const old = document.getElementById(formId);
-          if (old) old.remove();
-
-          let iframe = document.getElementById(targetId);
-          if (!iframe) {
-            iframe = document.createElement("iframe");
-            iframe.name = targetId;
-            iframe.id = targetId;
-            iframe.style.position = "fixed";
-            iframe.style.left = "-9999px";
-            iframe.style.top = "-9999px";
-            iframe.style.width = "10px";
-            iframe.style.height = "10px";
-            document.body.appendChild(iframe);
-          }
-
-          const form = document.createElement("form");
-          form.id = formId;
-          form.method = "POST";
-          form.action = endpoint;
-          form.target = targetId;
-          form.enctype = "application/x-www-form-urlencoded";
-          form.acceptCharset = "UTF-8";
-
-          for (const [k, v] of entries) {
-            const input = document.createElement("input");
-            input.type = "hidden";
-            input.name = k;
-            input.value = v;
-            form.appendChild(input);
-          }
-
-          document.body.appendChild(form);
-          form.submit();
-        }, endpoint, Array.from(params.entries()), tentativa);
-
-        etapas.push({
-          etapa: "form post navegação submit",
-          em: new Date().toISOString(),
-          detalhe: `Submit real executado no frame ${String(frameAtual.url() || "").slice(0, 500)}`
-        });
-        return true;
-      } catch (e) {
-        ultimoErro = e && e.message ? e.message : String(e);
-        etapas.push({
-          etapa: "form post navegação frame falhou",
-          em: new Date().toISOString(),
-          detalhe: `${String(frameAtual && frameAtual.url ? frameAtual.url() : "").slice(0, 400)} => ${ultimoErro}`
-        });
-        await wait(500);
-      }
+    let iframe = document.getElementById("__portal_da_target_2085_v138");
+    if (!iframe) {
+      iframe = document.createElement("iframe");
+      iframe.name = "__portal_da_target_2085_v138";
+      iframe.id = "__portal_da_target_2085_v138";
+      iframe.style.position = "fixed";
+      iframe.style.left = "-9999px";
+      iframe.style.top = "-9999px";
+      iframe.style.width = "10px";
+      iframe.style.height = "10px";
+      document.body.appendChild(iframe);
     }
-    throw new Error("Não foi possível executar submit em nenhum frame atual. Último erro: " + ultimoErro);
-  }
 
-  let submitExecutado = false;
-  for (let tentativa = 1; tentativa <= 3 && !submitExecutado; tentativa++) {
-    try {
-      submitExecutado = await executarSubmitEmFrameAtual(tentativa);
-    } catch (e) {
-      etapas.push({
-        etapa: "form post navegação tentativa falhou",
-        em: new Date().toISOString(),
-        detalhe: `tentativa ${tentativa}: ${e && e.message ? e.message : String(e)}`
-      });
-      await wait(800);
+    const form = document.createElement("form");
+    form.id = "__portal_da_form_2085_v138";
+    form.method = "POST";
+    form.action = endpoint;
+    form.target = "__portal_da_target_2085_v138";
+    form.enctype = "application/x-www-form-urlencoded";
+    form.acceptCharset = "UTF-8";
+
+    for (const [k, v] of entries) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = k;
+      input.value = v;
+      form.appendChild(input);
     }
-  }
 
-  if (!submitExecutado) {
-    throw new Error("Não foi possível submeter formulário real do relatório 2085 após 3 tentativas.");
-  }
+    document.body.appendChild(form);
+    form.submit();
+  }, endpoint, Array.from(params.entries()));
 
   const started = Date.now();
   while (!capturado && Date.now() - started < 60000) {
@@ -1536,6 +1480,116 @@ async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
 }
 
 
+async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
+  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const params = paramsPOST2085PadraoGMAT();
+  let capturado = null;
+
+  etapas.push({
+    etapa: "form post pagina limpa",
+    em: new Date().toISOString(),
+    detalhe: `Abrindo página limpa para POST real do endpoint 2085 com ${Array.from(params.keys()).length} campos.`
+  });
+
+  const pg = await browser.newPage();
+  await pg.setViewport({ width: 900, height: 700 }).catch(() => {});
+
+  try {
+    const cookies = await page.cookies("https://gmat.procempa.com.br");
+    if (cookies && cookies.length) {
+      await pg.setCookie(...cookies);
+      etapas.push({
+        etapa: "form post pagina limpa cookies",
+        em: new Date().toISOString(),
+        detalhe: `Cookies copiados: ${cookies.map(c => c.name).join(", ")}`
+      });
+    }
+  } catch (e) {
+    etapas.push({
+      etapa: "form post pagina limpa cookies aviso",
+      em: new Date().toISOString(),
+      detalhe: e && e.message ? e.message : String(e)
+    });
+  }
+
+  pg.on("response", async (response) => {
+    try {
+      if (capturado) return;
+      const url = String(response.url() || "");
+      if (!url.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do")) return;
+
+      const headers = response.headers();
+      const ab = await response.arrayBuffer();
+      const magic = ab && ab.byteLength >= 8
+        ? Array.from(new Uint8Array(ab.slice(0, 8))).map(b => b.toString(16).padStart(2, "0")).join(" ")
+        : "";
+
+      const ct = String(headers["content-type"] || "");
+      const cd = String(headers["content-disposition"] || "");
+      const xlsBinario = magic.startsWith("d0 cf 11 e0");
+      const htmlComTabela = ct.toLowerCase().includes("text/html") && ab && ab.byteLength > 80000;
+      const pareceArquivo = xlsBinario || isExcelContentType(ct) || /attachment|xls|xlsx|octet/i.test(cd) || htmlComTabela;
+
+      etapas.push({
+        etapa: "form post pagina limpa resposta",
+        em: new Date().toISOString(),
+        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magic}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}`
+      });
+
+      if (response.ok() && pareceArquivo && ab && ab.byteLength) {
+        capturado = {
+          url,
+          status: response.status(),
+          headers,
+          arrayBuffer: ab,
+          arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
+          origem: xlsBinario ? "pagina-limpa-xls-binario-v140" : "pagina-limpa-xls-html-tabela-v140"
+        };
+      }
+    } catch (e) {}
+  });
+
+  const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const htmlInputs = Array.from(params.entries()).map(([k, v]) =>
+    `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`
+  ).join("\n");
+
+  const html = `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>POST GMAT 2085</title></head>
+<body>
+<form id="f" method="POST" action="${endpoint}" enctype="application/x-www-form-urlencoded">
+${htmlInputs}
+</form>
+<script>setTimeout(function(){document.getElementById('f').submit();},250);</script>
+</body>
+</html>`;
+
+  await pg.setContent(html, { waitUntil: "load", timeout: 15000 });
+  await wait(1000);
+  try { await pg.evaluate(() => document.getElementById("f") && document.getElementById("f").submit()); } catch (e) {}
+
+  const started = Date.now();
+  while (!capturado && Date.now() - started < 70000) {
+    await wait(500);
+  }
+
+  if (capturado) {
+    try { await pg.close(); } catch (e) {}
+    return capturado;
+  }
+
+  const txt = await pg.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "").catch(() => "");
+  etapas.push({
+    etapa: "form post pagina limpa não capturou",
+    em: new Date().toISOString(),
+    detalhe: `Nenhum XLS capturado em página limpa. Texto atual: ${txt.slice(0, 1000)}`
+  });
+  try { await pg.close(); } catch (e) {}
+  return null;
+}
+
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -1546,7 +1600,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v139",
+        versao: "v140",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
