@@ -216,6 +216,46 @@ async function clicarBotaoReal2085(frame, forcarPrintXLS = false) {
   }
 }
 
+
+async function submeterFormulario2085Nativo(frame, modo = "submit-direto") {
+  return await frame.evaluate((modo) => {
+    const form = document.forms && document.forms["gerarInformacoesPlanilhaPesquisaForm"] ||
+      document.querySelector('form[name="gerarInformacoesPlanilhaPesquisaForm"], form[action*="gerarInformacoesPlanilhaPesquisa.do"]');
+    if (!form) return { ok: false, motivo: "form ausente" };
+
+    const set = (name, value) => {
+      let el = form.elements && form.elements[name];
+      if (el && typeof el.length === "number" && !el.tagName) el = el[0];
+      if (!el) {
+        el = document.createElement("input");
+        el.type = "hidden";
+        el.name = name;
+        form.appendChild(el);
+      }
+      el.value = value;
+    };
+
+    set("perform", "printXLS");
+    set("printPerform", "printXLS");
+    set("actionForward", "success");
+    set("strutsFormName", "gerarInformacoesPlanilhaPesquisaForm");
+    set("validate", "true");
+    set("pesquisar", "false");
+    set("defaultSearch.pageSize", "0");
+
+    const antes = Array.from(new FormData(form).entries()).map(([k,v]) => `${k}=${String(v)}`).join("&");
+
+    if (modo === "submitForm-legado" && typeof window.submitForm === "function") {
+      window.submitForm("", "printXLS");
+      return { ok: true, modo, post: antes.slice(0, 1800) };
+    }
+
+    // Equivale ao envio nativo do formulário depois que o JS do botão já ajustou os hidden fields.
+    HTMLFormElement.prototype.submit.call(form);
+    return { ok: true, modo: "submit-nativo", post: antes.slice(0, 1800) };
+  }, modo);
+}
+
 async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   const endpointTrecho = "/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
@@ -266,19 +306,21 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       const url = String(response.url() || "");
       if (!url.includes(endpointTrecho) || String(req.method() || "").toUpperCase() !== "POST") return;
       const headers = response.headers();
-      const ab = await response.arrayBuffer();
+      const buf = await response.buffer();
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+      const postData = textValue(req.postData ? req.postData() : "");
       const ok = aceitar({
         url,
         status: response.status(),
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v142"
+        origem: "clique-real-response-v143"
       });
       etapas.push({
         etapa: ok ? "response do clique contém XLS real" : "response do clique não era XLS",
         em: new Date().toISOString(),
-        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
+        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; post=${postData.slice(0, 1400)}`
       });
     } catch (e) {
       etapas.push({ etapa: "response clique erro", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
@@ -314,12 +356,12 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
           headers,
           arrayBuffer: ab,
           arquivoNome: parseFileName(headers),
-          origem: "clique-real-cdp-response-v142"
+          origem: "clique-real-cdp-response-v143"
         });
         etapas.push({
           etapa: ok ? "CDP capturou XLS real" : "CDP interceptou resposta não-XLS",
           em: new Date().toISOString(),
-          detalhe: `HTTP ${ev.responseStatusCode}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
+          detalhe: `HTTP ${ev.responseStatusCode}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; post=${textValue(ev.request && ev.request.postData).slice(0, 1400)}`
         });
       } catch (e) {
         etapas.push({ etapa: "CDP leitura resposta falhou", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
@@ -350,17 +392,30 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
     let resultado = await aguardar(18000);
     if (resultado) return resultado;
 
-    // Se o JavaScript legado não mudou os hidden fields, fazemos uma segunda tentativa
-    // no MESMO formulário real, preservando handlers e a sessão do navegador.
+    // Segunda tentativa: chama diretamente a função legada usada pelo onclick do próprio GMAT,
+    // já com os hidden fields em printXLS.
     etapas.push({
-      etapa: "segunda tentativa no formulário real",
+      etapa: "segunda tentativa via submitForm legado",
       em: new Date().toISOString(),
-      detalhe: "A primeira resposta não trouxe XLS real. Definindo perform=printXLS e printPerform=printXLS e clicando novamente o botão real."
+      detalhe: "A primeira resposta não trouxe XLS real. Executando o submitForm('', 'printXLS') da própria página, com perform e printPerform definidos como printXLS."
     });
 
     localizado = await localizarFormulario2085Vivo(page) || localizado;
-    const clicou2 = await clicarBotaoReal2085(localizado.frame, true);
-    if (!clicou2) return null;
+    const legado = await submeterFormulario2085Nativo(localizado.frame, "submitForm-legado").catch(e => ({ok:false,motivo:e.message}));
+    etapas.push({ etapa: "submitForm legado acionado", em: new Date().toISOString(), detalhe: JSON.stringify(legado).slice(0, 1900) });
+    resultado = await aguardar(18000);
+    if (resultado) return resultado;
+
+    // Terceira e última tentativa desta execução: envio nativo do FORM REAL, usando os valores
+    // vivos da sessão atual. Isso evita reutilizar o idAlmoxarifado serializado de outra sessão.
+    localizado = await localizarFormulario2085Vivo(page) || localizado;
+    etapas.push({
+      etapa: "terceira tentativa submit nativo do form real",
+      em: new Date().toISOString(),
+      detalhe: "Enviando o formulário vivo da sessão atual com perform=printXLS e printPerform=printXLS, sem fetch e sem reconstruir campos fora da página."
+    });
+    const nativo = await submeterFormulario2085Nativo(localizado.frame, "submit-direto").catch(e => ({ok:false,motivo:e.message}));
+    etapas.push({ etapa: "submit nativo acionado", em: new Date().toISOString(), detalhe: JSON.stringify(nativo).slice(0, 1900) });
     resultado = await aguardar(30000);
     return resultado || capturado;
   } finally {
@@ -929,7 +984,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v142 rejeita o HTML da tela do relatório e intercepta a resposta no nível CDP antes de o Chromium tratá-la como download. " +
+        "A v143 rejeita o HTML da tela do relatório, registra o POST realmente produzido pelo botão e tenta o submitForm legado e o submit nativo do formulário vivo da sessão atual. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1488,7 +1543,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v142",
+        versao: "v143",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
