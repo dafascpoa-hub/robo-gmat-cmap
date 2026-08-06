@@ -686,9 +686,25 @@ async function atualizarEstoqueGMAT(request, env) {
     }
 
     if (!captured) {
-      log("tentando post por formulário/navegação real");
-      const capturadoFormReal = await submeterPOST2085ComoFormularioReal(page, browser, etapas);
-      if (capturadoFormReal) captured = capturadoFormReal;
+      log("tentando post por página limpa");
+      const capturadoPaginaLimpa = await submeterPOST2085PaginaLimpa(page, browser, etapas);
+      if (capturadoPaginaLimpa) captured = capturadoPaginaLimpa;
+    }
+
+    // Fallback legado mantido apenas como última alternativa.
+    // Não pode mais derrubar a execução caso o frame do GMAT seja recriado/desanexado.
+    if (!captured) {
+      log("tentando post por formulário/navegação real (fallback legado)");
+      try {
+        const capturadoFormReal = await submeterPOST2085ComoFormularioReal(page, browser, etapas);
+        if (capturadoFormReal) captured = capturadoFormReal;
+      } catch (e) {
+        etapas.push({
+          etapa: "form post navegação aviso",
+          em: new Date().toISOString(),
+          detalhe: `Fallback legado ignorado sem abortar o robô: ${e && e.message ? e.message : String(e)}`
+        });
+      }
     }
 
     if (!captured) {
@@ -1481,14 +1497,18 @@ async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
 
 
 async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
+  // v141: evita qualquer referência persistente a Frame. O POST é realizado em uma
+  // página independente, mas dentro da mesma origem e com os cookies da sessão autenticada.
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const origemGMAT = "https://gmat.procempa.com.br/gmat/";
   const params = paramsPOST2085PadraoGMAT();
   let capturado = null;
+  let ultimaResposta = null;
 
   etapas.push({
     etapa: "form post pagina limpa",
     em: new Date().toISOString(),
-    detalhe: `Abrindo página limpa para POST real do endpoint 2085 com ${Array.from(params.keys()).length} campos.`
+    detalhe: `Abrindo página independente na mesma origem do GMAT para POST real do endpoint 2085 com ${Array.from(params.keys()).length} campos; sem reutilizar Frame.`
   });
 
   const pg = await browser.newPage();
@@ -1503,12 +1523,36 @@ async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
         em: new Date().toISOString(),
         detalhe: `Cookies copiados: ${cookies.map(c => c.name).join(", ")}`
       });
+    } else {
+      etapas.push({
+        etapa: "form post pagina limpa cookies aviso",
+        em: new Date().toISOString(),
+        detalhe: "Nenhum cookie da sessão GMAT foi encontrado para copiar."
+      });
     }
   } catch (e) {
     etapas.push({
       etapa: "form post pagina limpa cookies aviso",
       em: new Date().toISOString(),
       detalhe: e && e.message ? e.message : String(e)
+    });
+  }
+
+  // Importante: antes de criar o formulário, posiciona a página na própria origem GMAT.
+  // Isso evita um POST cross-site saindo de about:blank e reduz o risco de cookies SameSite
+  // deixarem de acompanhar a requisição.
+  try {
+    await pg.goto(origemGMAT, { waitUntil: "domcontentloaded", timeout: 30000 });
+    etapas.push({
+      etapa: "form post pagina limpa origem",
+      em: new Date().toISOString(),
+      detalhe: `Página preparada na origem autenticada: ${String(pg.url() || "").slice(0, 500)}`
+    });
+  } catch (e) {
+    etapas.push({
+      etapa: "form post pagina limpa origem aviso",
+      em: new Date().toISOString(),
+      detalhe: `Não foi possível estabilizar a página de apoio antes do POST: ${e && e.message ? e.message : String(e)}`
     });
   }
 
@@ -1520,36 +1564,48 @@ async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
 
       const headers = response.headers();
       const ab = await response.arrayBuffer();
-      const magic = ab && ab.byteLength >= 8
-        ? Array.from(new Uint8Array(ab.slice(0, 8))).map(b => b.toString(16).padStart(2, "0")).join(" ")
-        : "";
-
+      const avaliacao = capturaParecePlanilhaGMAT(ab, headers, url);
       const ct = String(headers["content-type"] || "");
       const cd = String(headers["content-disposition"] || "");
-      const xlsBinario = magic.startsWith("d0 cf 11 e0");
-      const htmlComTabela = ct.toLowerCase().includes("text/html") && ab && ab.byteLength > 80000;
-      const pareceArquivo = xlsBinario || isExcelContentType(ct) || /attachment|xls|xlsx|octet/i.test(cd) || htmlComTabela;
+      const amostra = avaliacao.ok ? "" : String(avaliacao.amostra || textoAmostraGMAT(ab, 1200)).slice(0, 1200);
+
+      ultimaResposta = {
+        status: response.status(),
+        bytes: ab ? ab.byteLength : 0,
+        magic: magicArquivoGMAT(ab),
+        contentType: ct,
+        contentDisposition: cd,
+        url,
+        motivo: avaliacao.motivo,
+        amostra
+      };
 
       etapas.push({
         etapa: "form post pagina limpa resposta",
         em: new Date().toISOString(),
-        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magic}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}`
+        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magicArquivoGMAT(ab)}; avaliacao=${avaliacao.motivo}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}${amostra ? `; amostra=${amostra}` : ""}`
       });
 
-      if (response.ok() && pareceArquivo && ab && ab.byteLength) {
+      if (response.ok() && avaliacao.ok && ab && ab.byteLength) {
         capturado = {
           url,
           status: response.status(),
           headers,
           arrayBuffer: ab,
           arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-          origem: xlsBinario ? "pagina-limpa-xls-binario-v140" : "pagina-limpa-xls-html-tabela-v140"
+          origem: "pagina-limpa-mesma-origem-v141"
         };
       }
-    } catch (e) {}
+    } catch (e) {
+      etapas.push({
+        etapa: "form post pagina limpa resposta erro",
+        em: new Date().toISOString(),
+        detalhe: e && e.message ? e.message : String(e)
+      });
+    }
   });
 
-  const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/\"/g, "&quot;").replace(/</g, "&lt;");
   const htmlInputs = Array.from(params.entries()).map(([k, v]) =>
     `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`
   ).join("\n");
@@ -1561,13 +1617,30 @@ async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
 <form id="f" method="POST" action="${endpoint}" enctype="application/x-www-form-urlencoded">
 ${htmlInputs}
 </form>
-<script>setTimeout(function(){document.getElementById('f').submit();},250);</script>
 </body>
 </html>`;
 
-  await pg.setContent(html, { waitUntil: "load", timeout: 15000 });
-  await wait(1000);
-  try { await pg.evaluate(() => document.getElementById("f") && document.getElementById("f").submit()); } catch (e) {}
+  try {
+    await pg.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
+    etapas.push({
+      etapa: "form post pagina limpa submit",
+      em: new Date().toISOString(),
+      detalhe: "Submetendo uma única vez o formulário real no contexto da página independente."
+    });
+    await pg.evaluate(() => {
+      const f = document.getElementById("f");
+      if (!f) throw new Error("Formulário auxiliar 2085 não foi criado.");
+      f.submit();
+    });
+  } catch (e) {
+    etapas.push({
+      etapa: "form post pagina limpa submit erro",
+      em: new Date().toISOString(),
+      detalhe: e && e.message ? e.message : String(e)
+    });
+    try { await pg.close(); } catch (e2) {}
+    return null;
+  }
 
   const started = Date.now();
   while (!capturado && Date.now() - started < 70000) {
@@ -1583,7 +1656,9 @@ ${htmlInputs}
   etapas.push({
     etapa: "form post pagina limpa não capturou",
     em: new Date().toISOString(),
-    detalhe: `Nenhum XLS capturado em página limpa. Texto atual: ${txt.slice(0, 1000)}`
+    detalhe: ultimaResposta
+      ? `Resposta do endpoint não foi reconhecida como planilha. HTTP=${ultimaResposta.status}; bytes=${ultimaResposta.bytes}; magic=${ultimaResposta.magic}; content-type=${ultimaResposta.contentType}; content-disposition=${ultimaResposta.contentDisposition}; motivo=${ultimaResposta.motivo}; amostra=${String(ultimaResposta.amostra || "").slice(0, 1000)}`
+      : `Nenhuma resposta do endpoint 2085 foi capturada. Texto atual: ${txt.slice(0, 1000)}`
   });
   try { await pg.close(); } catch (e) {}
   return null;
@@ -1600,7 +1675,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v140",
+        versao: "v141",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
