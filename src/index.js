@@ -75,6 +75,301 @@ function isExcelResponse(response) {
   );
 }
 
+
+function bytesFromBase64(base64) {
+  const bin = atob(base64 || "");
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function parecePlanilhaReal(buffer, headers = {}) {
+  if (!buffer || !buffer.byteLength) return false;
+  const b = new Uint8Array(buffer);
+  const ct = textValue(headers["content-type"] || headers["Content-Type"]).toLowerCase();
+  const cd = textValue(headers["content-disposition"] || headers["Content-Disposition"]).toLowerCase();
+
+  // XLS clássico/OLE: D0 CF 11 E0 A1 B1 1A E1
+  const ole = b.length >= 8 &&
+    b[0] === 0xD0 && b[1] === 0xCF && b[2] === 0x11 && b[3] === 0xE0 &&
+    b[4] === 0xA1 && b[5] === 0xB1 && b[6] === 0x1A && b[7] === 0xE1;
+
+  // XLSX/ZIP: PK\x03\x04
+  const zip = b.length >= 4 && b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04;
+
+  if (ole || zip) return true;
+  if ((ct.includes("excel") || ct.includes("spreadsheet") || cd.includes(".xls")) && b.length > 50000) return true;
+
+  // Alguns sistemas legados geram XLS como HTML. Só aceitamos se houver os cabeçalhos reais da planilha.
+  if (ct.includes("text/html") && b.length > 50000) {
+    try {
+      const amostra = new TextDecoder("windows-1252").decode(b.slice(0, Math.min(b.length, 150000)));
+      return amostra.includes("Cód Mat") && amostra.includes("Nome Mat") && amostra.includes("Qtde Estoque");
+    } catch (e) {}
+  }
+  return false;
+}
+
+function headersCDPToObject(headers) {
+  const out = {};
+  for (const h of headers || []) {
+    if (!h || !h.name) continue;
+    out[String(h.name).toLowerCase()] = textValue(h.value);
+  }
+  return out;
+}
+
+async function localizarFormulario2085Vivo(page) {
+  for (const frame of allFrames(page)) {
+    try {
+      const info = await frame.evaluate(() => {
+        const form = document.forms && document.forms["gerarInformacoesPlanilhaPesquisaForm"] ||
+          document.querySelector('form[name="gerarInformacoesPlanilhaPesquisaForm"], form[action*="gerarInformacoesPlanilhaPesquisa.do"]');
+        if (!form) return null;
+        const botoes = Array.from(form.querySelectorAll('input,button,a')).map((el, idx) => ({
+          idx,
+          tag: el.tagName,
+          type: el.type || "",
+          name: el.name || "",
+          id: el.id || "",
+          value: el.value || "",
+          text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+          onclick: el.getAttribute && (el.getAttribute("onclick") || "") || ""
+        })).filter(x => /gerar|planilha|xls|print/i.test(`${x.value} ${x.text} ${x.name} ${x.id} ${x.onclick}`));
+        return {
+          action: form.action || "",
+          method: form.method || "",
+          name: form.name || "",
+          perform: form.elements && form.elements.perform ? form.elements.perform.value : "",
+          printPerform: form.elements && form.elements.printPerform ? form.elements.printPerform.value : "",
+          botoes
+        };
+      });
+      if (info) return { frame, info };
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function clicarBotaoReal2085(frame, forcarPrintXLS = false) {
+  const seletores = [
+    'input[value="Gerar Planilha"]',
+    'input[value*="Gerar"]',
+    'button[value*="Gerar"]',
+    'button',
+    'input[type="submit"]',
+    'input[type="button"]',
+    'a'
+  ];
+
+  if (forcarPrintXLS) {
+    try {
+      await frame.evaluate(() => {
+        const form = document.forms && document.forms["gerarInformacoesPlanilhaPesquisaForm"] ||
+          document.querySelector('form[name="gerarInformacoesPlanilhaPesquisaForm"], form[action*="gerarInformacoesPlanilhaPesquisa.do"]');
+        if (!form) return;
+        const set = (name, value) => {
+          let el = form.elements && form.elements[name];
+          if (el && typeof el.length === "number" && !el.tagName) el = el[0];
+          if (!el) {
+            el = document.createElement("input");
+            el.type = "hidden";
+            el.name = name;
+            form.appendChild(el);
+          }
+          el.value = value;
+        };
+        set("perform", "printXLS");
+        set("printPerform", "printXLS");
+      });
+    } catch (e) {}
+  }
+
+  for (const sel of seletores) {
+    try {
+      const handles = await frame.$$(sel);
+      for (const h of handles) {
+        const alvo = await h.evaluate(el => {
+          const txt = `${el.value || ""} ${el.innerText || ""} ${el.textContent || ""} ${el.name || ""} ${el.id || ""} ${(el.getAttribute && el.getAttribute("onclick")) || ""}`;
+          const visivel = !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+          return visivel && /gerar.*planilha|planilha.*gerar|printxls|xls/i.test(txt);
+        }).catch(() => false);
+        if (!alvo) continue;
+        await h.click();
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  // Último recurso: requestSubmit preserva o fluxo normal de submit do formulário.
+  try {
+    return await frame.evaluate(() => {
+      const form = document.forms && document.forms["gerarInformacoesPlanilhaPesquisaForm"] ||
+        document.querySelector('form[name="gerarInformacoesPlanilhaPesquisaForm"], form[action*="gerarInformacoesPlanilhaPesquisa.do"]');
+      if (!form) return false;
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.submit();
+      return true;
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
+async function capturarPlanilha2085PorCliqueReal(page, etapas) {
+  const endpointTrecho = "/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  let localizado = await localizarFormulario2085Vivo(page);
+
+  if (!localizado) {
+    etapas.push({
+      etapa: "form 2085 não estava no DOM vivo",
+      em: new Date().toISOString(),
+      detalhe: "Abrindo o endpoint do relatório 2085 na própria página autenticada para usar o formulário real do GMAT."
+    });
+    await page.goto(endpoint, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await wait(1200);
+    localizado = await localizarFormulario2085Vivo(page);
+  }
+
+  if (!localizado) {
+    etapas.push({
+      etapa: "form 2085 ausente",
+      em: new Date().toISOString(),
+      detalhe: "O formulário real gerarInformacoesPlanilhaPesquisaForm não foi encontrado mesmo após abrir diretamente o endpoint autenticado."
+    });
+    return null;
+  }
+
+  etapas.push({
+    etapa: "form 2085 vivo localizado",
+    em: new Date().toISOString(),
+    detalhe: JSON.stringify(localizado.info).slice(0, 1800)
+  });
+
+  let capturado = null;
+  let resolver;
+  const promessa = new Promise(resolve => { resolver = resolve; });
+
+  const aceitar = (candidato) => {
+    if (capturado || !candidato || !candidato.arrayBuffer) return false;
+    if (!parecePlanilhaReal(candidato.arrayBuffer, candidato.headers || {})) return false;
+    capturado = candidato;
+    try { resolver(candidato); } catch (e) {}
+    return true;
+  };
+
+  // Fallback normal do Puppeteer.
+  const responseHandler = async (response) => {
+    try {
+      const req = response.request();
+      const url = String(response.url() || "");
+      if (!url.includes(endpointTrecho) || String(req.method() || "").toUpperCase() !== "POST") return;
+      const headers = response.headers();
+      const ab = await response.arrayBuffer();
+      const ok = aceitar({
+        url,
+        status: response.status(),
+        headers,
+        arrayBuffer: ab,
+        arquivoNome: parseFileName(headers),
+        origem: "clique-real-response-v142"
+      });
+      etapas.push({
+        etapa: ok ? "response do clique contém XLS real" : "response do clique não era XLS",
+        em: new Date().toISOString(),
+        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
+      });
+    } catch (e) {
+      etapas.push({ etapa: "response clique erro", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
+    }
+  };
+  page.on("response", responseHandler);
+
+  // Captura no nível CDP, antes de o Chromium transformar a resposta em download.
+  let cdp = null;
+  try {
+    cdp = await page.target().createCDPSession();
+    await cdp.send("Network.enable").catch(() => {});
+    await cdp.send("Fetch.enable", {
+      patterns: [{ urlPattern: "*gerarInformacoesPlanilhaPesquisa.do*", requestStage: "Response" }]
+    });
+
+    cdp.on("Fetch.requestPaused", async ev => {
+      const url = String(ev.request && ev.request.url || "");
+      const metodo = String(ev.request && ev.request.method || "").toUpperCase();
+      if (!url.includes(endpointTrecho) || metodo !== "POST" || !ev.responseStatusCode) {
+        try { await cdp.send("Fetch.continueRequest", { requestId: ev.requestId }); } catch (e) {}
+        return;
+      }
+
+      let headers = headersCDPToObject(ev.responseHeaders || []);
+      try {
+        const body = await cdp.send("Fetch.getResponseBody", { requestId: ev.requestId });
+        const bytes = body.base64Encoded ? bytesFromBase64(body.body) : new TextEncoder().encode(body.body || "");
+        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const ok = aceitar({
+          url,
+          status: ev.responseStatusCode,
+          headers,
+          arrayBuffer: ab,
+          arquivoNome: parseFileName(headers),
+          origem: "clique-real-cdp-response-v142"
+        });
+        etapas.push({
+          etapa: ok ? "CDP capturou XLS real" : "CDP interceptou resposta não-XLS",
+          em: new Date().toISOString(),
+          detalhe: `HTTP ${ev.responseStatusCode}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
+        });
+      } catch (e) {
+        etapas.push({ etapa: "CDP leitura resposta falhou", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
+      } finally {
+        try { await cdp.send("Fetch.continueResponse", { requestId: ev.requestId }); }
+        catch (e1) { try { await cdp.send("Fetch.continueRequest", { requestId: ev.requestId }); } catch (e2) {} }
+      }
+    });
+  } catch (e) {
+    etapas.push({
+      etapa: "CDP indisponível",
+      em: new Date().toISOString(),
+      detalhe: "Seguindo com captura normal de response. " + (e && e.message ? e.message : String(e))
+    });
+  }
+
+  async function aguardar(ms) {
+    if (capturado) return capturado;
+    const timeout = new Promise(resolve => setTimeout(() => resolve(null), ms));
+    return await Promise.race([promessa, timeout]);
+  }
+
+  try {
+    etapas.push({ etapa: "clicando botão real Gerar Planilha", em: new Date().toISOString(), detalhe: "Primeira tentativa sem alterar o formulário." });
+    const clicou = await clicarBotaoReal2085(localizado.frame, false);
+    if (!clicou) throw new Error("Botão real Gerar Planilha não localizado no formulário 2085.");
+
+    let resultado = await aguardar(18000);
+    if (resultado) return resultado;
+
+    // Se o JavaScript legado não mudou os hidden fields, fazemos uma segunda tentativa
+    // no MESMO formulário real, preservando handlers e a sessão do navegador.
+    etapas.push({
+      etapa: "segunda tentativa no formulário real",
+      em: new Date().toISOString(),
+      detalhe: "A primeira resposta não trouxe XLS real. Definindo perform=printXLS e printPerform=printXLS e clicando novamente o botão real."
+    });
+
+    localizado = await localizarFormulario2085Vivo(page) || localizado;
+    const clicou2 = await clicarBotaoReal2085(localizado.frame, true);
+    if (!clicou2) return null;
+    resultado = await aguardar(30000);
+    return resultado || capturado;
+  } finally {
+    try { page.off("response", responseHandler); } catch (e) {}
+    try { if (cdp) await cdp.send("Fetch.disable"); } catch (e) {}
+    try { if (cdp) await cdp.detach(); } catch (e) {}
+  }
+}
+
 function allFrames(page) {
   try {
     return [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
@@ -624,88 +919,8 @@ async function atualizarEstoqueGMAT(request, env) {
       throw new Error("Relatório 2085 não confirmado após clique. Texto visível: " + txt.slice(0, 900));
     }
 
-    log("baixando planilha por POST no contexto do navegador");
-    const browser2085 = await baixarPlanilha2085FetchNoBrowser(page, etapas);
-    if (browser2085) {
-      captured = browser2085;
-    }
-
-    if (!captured) {
-      log("baixando planilha por POST direto");
-      const direto2085 = await baixarPlanilha2085PostDireto(page, etapas);
-      if (direto2085) {
-        captured = direto2085;
-      }
-    }
-
-    log("gerando planilha");
-    const paginasAntes = await browser.pages().catch(() => []);
-    for (const pg of paginasAntes) await anexarCapturaArquivo(pg, "pagina-existente");
-
-    const clicouGerar = captured ? true : await clickGerarPlanilhaEmQualquerFrame(page);
-    if (!clicouGerar) {
-      const txt = await dumpVisibleText(page);
-      throw new Error("Botão Gerar Planilha não encontrado em nenhum frame. Texto visível: " + txt.slice(0, 900));
-    }
-
-    await Promise.allSettled([
-      page.waitForNavigation({ waitUntil: "networkidle0", timeout: 30000 })
-    ]);
-
-    log("aguardando popup/download");
-    const started = Date.now();
-    let popupVisto = false;
-    let urlsPaginas = [];
-    while (!captured && Date.now() - started < 90000) {
-      try {
-        const paginas = await browser.pages();
-        urlsPaginas = [];
-        for (const pg of paginas) {
-          await anexarCapturaArquivo(pg, "pagina-ou-popup");
-          urlsPaginas.push(await pg.url().catch(() => ""));
-        }
-        if (paginas.length > paginasAntes.length) popupVisto = true;
-      } catch (e) {}
-      await wait(600);
-    }
-
-    if (!captured) {
-      log("tentando submit direto do formulário");
-      const capturadoDireto = await tentarSubmitDiretoRelatorio2085(page, captured, etapas);
-      if (capturadoDireto) {
-        captured = capturadoDireto;
-      }
-    }
-
-    if (!captured) {
-      log("tentando fallback exaustivo do relatório 2085");
-      const capturadoExaustivo = await tentarVariosSubmits2085(page, etapas);
-      if (capturadoExaustivo) {
-        captured = capturadoExaustivo;
-      }
-    }
-
-    if (!captured) {
-      log("tentando post por página limpa");
-      const capturadoPaginaLimpa = await submeterPOST2085PaginaLimpa(page, browser, etapas);
-      if (capturadoPaginaLimpa) captured = capturadoPaginaLimpa;
-    }
-
-    // Fallback legado mantido apenas como última alternativa.
-    // Não pode mais derrubar a execução caso o frame do GMAT seja recriado/desanexado.
-    if (!captured) {
-      log("tentando post por formulário/navegação real (fallback legado)");
-      try {
-        const capturadoFormReal = await submeterPOST2085ComoFormularioReal(page, browser, etapas);
-        if (capturadoFormReal) captured = capturadoFormReal;
-      } catch (e) {
-        etapas.push({
-          etapa: "form post navegação aviso",
-          em: new Date().toISOString(),
-          detalhe: `Fallback legado ignorado sem abortar o robô: ${e && e.message ? e.message : String(e)}`
-        });
-      }
-    }
+    log("capturando planilha pelo clique real");
+    captured = await capturarPlanilha2085PorCliqueReal(page, etapas);
 
     if (!captured) {
       const title = await page.title().catch(() => "");
@@ -713,10 +928,9 @@ async function atualizarEstoqueGMAT(request, env) {
         return await page.evaluate(() => document.body ? document.body.innerText.slice(0, 1000) : "").catch(() => "");
       });
       throw new Error(
-        "A planilha não foi capturada após clique, popup, submit direto, submit exaustivo e URLs prováveis. " +
-        (popupVisto ? "Popup/janela foi detectado, mas o arquivo não foi interceptado. " : "Nenhum popup novo foi confirmado. ") +
-        "URLs abertas: " + urlsPaginas.filter(Boolean).join(" | ").slice(0, 900) +
-        " | Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
+        "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
+        "A v142 rejeita o HTML da tela do relatório e intercepta a resposta no nível CDP antes de o Chromium tratá-la como download. " +
+        "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
 
@@ -1171,135 +1385,6 @@ function paramsPOST2085PadraoGMAT() {
   return params;
 }
 
-
-function arrayBufferFromBase64GMAT(base64) {
-  const bin = atob(String(base64 || ""));
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes.buffer;
-}
-
-function magicArquivoGMAT(ab) {
-  try {
-    const b = new Uint8Array(ab || new ArrayBuffer(0));
-    if (b.length >= 8 && b[0] === 0xD0 && b[1] === 0xCF && b[2] === 0x11 && b[3] === 0xE0) return "xls-cdf";
-    if (b.length >= 4 && b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04) return "xlsx-zip";
-    if (b.length >= 1 && b[0] === 0x3C) return "html";
-  } catch (e) {}
-  return "desconhecido";
-}
-
-function textoAmostraGMAT(ab, limite = 1600) {
-  try {
-    return new TextDecoder("utf-8").decode((ab || new ArrayBuffer(0)).slice(0, limite));
-  } catch (e) {
-    try { return new TextDecoder("iso-8859-1").decode((ab || new ArrayBuffer(0)).slice(0, limite)); } catch (e2) { return ""; }
-  }
-}
-
-function htmlTemCabecalhoPlanilhaGMAT(texto) {
-  const t = String(texto || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ").toLowerCase();
-  return (t.includes("cod mat") || t.includes("codigo mat")) &&
-         t.includes("nome mat") &&
-         t.includes("qtde estoque");
-}
-
-function capturaParecePlanilhaGMAT(ab, headers = {}, url = "") {
-  const ct = String(headers["content-type"] || headers["Content-Type"] || "").toLowerCase();
-  const cd = String(headers["content-disposition"] || headers["Content-Disposition"] || "").toLowerCase();
-  const magic = magicArquivoGMAT(ab);
-  if (magic === "xls-cdf" || magic === "xlsx-zip") return { ok:true, motivo:magic };
-  if (/attachment|\.xls|\.xlsx|octet|excel|spreadsheet/i.test(cd) || isExcelContentType(ct)) return { ok:true, motivo:"headers-excel" };
-  if (magic === "html" || ct.includes("text/html")) {
-    const amostra = textoAmostraGMAT(ab, 2500);
-    if (htmlTemCabecalhoPlanilhaGMAT(amostra)) return { ok:true, motivo:"html-com-cabecalho-gmat" };
-    return { ok:false, motivo:"html-sem-cabecalho-gmat", amostra };
-  }
-  return { ok:false, motivo:"sem-magic-xls", amostra:textoAmostraGMAT(ab, 800) };
-}
-
-async function baixarPlanilha2085FetchNoBrowser(page, etapas) {
-  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
-  const body = paramsPOST2085PadraoGMAT().toString();
-
-  etapas.push({ etapa:"post xls via browser", em:new Date().toISOString(), detalhe:"Executando fetch dentro do contexto autenticado do GMAT para capturar o corpo real da resposta." });
-
-  let resultado = null;
-  const frames = allFrames(page);
-  for (const frame of frames) {
-    try {
-      const frameUrl = String(frame.url() || "");
-      if (!frameUrl.includes("gmat.procempa.com.br")) continue;
-      resultado = await frame.evaluate(async ({ endpoint, body }) => {
-        const resp = await fetch(endpoint, {
-          method: "POST",
-          credentials: "include",
-          redirect: "follow",
-          headers: {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/vnd.ms-excel,application/octet-stream,*/*;q=0.8",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Cache-Control": "max-age=0"
-          },
-          body
-        });
-        const headers = {};
-        resp.headers.forEach((v,k)=>headers[k]=v);
-        const ab = await resp.arrayBuffer();
-        const bytes = new Uint8Array(ab);
-        let base64 = "";
-        const chunk = 0x8000;
-        for (let i=0;i<bytes.length;i+=chunk) {
-          let s = "";
-          const part = bytes.subarray(i, i+chunk);
-          for (let j=0;j<part.length;j++) s += String.fromCharCode(part[j]);
-          base64 += btoa(s);
-        }
-        // O loop acima concatena blocos base64 independentes; para evitar corromper, faz conversão única em chunks binários.
-        let binary = "";
-        for (let i=0;i<bytes.length;i+=chunk) {
-          const part = bytes.subarray(i, i+chunk);
-          binary += String.fromCharCode(...part);
-        }
-        base64 = btoa(binary);
-        return { ok: resp.ok, status: resp.status, url: resp.url, headers, bytes: bytes.length, base64 };
-      }, { endpoint, body });
-      break;
-    } catch (e) {
-      etapas.push({ etapa:"post xls via browser erro", em:new Date().toISOString(), detalhe:`Frame ${String(frame.url()||"").slice(0,300)}: ${e && e.message ? e.message : String(e)}` });
-    }
-  }
-
-  if (!resultado) {
-    etapas.push({ etapa:"post xls via browser", em:new Date().toISOString(), detalhe:"Nenhum frame GMAT permitiu executar fetch interno." });
-    return null;
-  }
-
-  const ab = arrayBufferFromBase64GMAT(resultado.base64);
-  const headers = resultado.headers || {};
-  const avaliacao = capturaParecePlanilhaGMAT(ab, headers, resultado.url || endpoint);
-  etapas.push({
-    etapa:"post xls via browser resposta",
-    em:new Date().toISOString(),
-    detalhe:`HTTP ${resultado.status}; bytes=${resultado.bytes}; magic=${magicArquivoGMAT(ab)}; avaliacao=${avaliacao.motivo}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; url=${String(resultado.url||"").slice(0,500)}`
-  });
-
-  if (!resultado.ok || !avaliacao.ok) {
-    etapas.push({ etapa:"post xls via browser não capturou arquivo", em:new Date().toISOString(), detalhe:`${avaliacao.motivo}; amostra=${String(avaliacao.amostra||"").slice(0,1000)}` });
-    return null;
-  }
-
-  return {
-    url: resultado.url,
-    status: resultado.status,
-    headers,
-    arrayBuffer: ab,
-    arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-    origem: "post-xls-browser-v137"
-  };
-}
-
 async function baixarPlanilha2085PostDireto(page, etapas) {
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const referer = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
@@ -1345,15 +1430,41 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     detalhe: `HTTP ${resp.status}; bytes=${ab ? ab.byteLength : 0}; content-type=${contentType}; content-disposition=${contentDisposition}; url=${String(resp.url || "").slice(0, 500)}`
   });
 
-  const avaliacao = capturaParecePlanilhaGMAT(ab, headers, resp.url || endpoint);
+  const urlResp = String(resp.url || endpoint);
+  const htmlXlsLegado =
+    resp.ok &&
+    urlResp.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do") &&
+    contentType.toLowerCase().includes("text/html") &&
+    ab &&
+    ab.byteLength > 10000;
 
-  if (!resp.ok || !ab || !ab.byteLength || !avaliacao.ok) {
+  const pareceXLS =
+    isExcelContentType(contentType) ||
+    /attachment|xls|xlsx|csv|octet/i.test(contentDisposition) ||
+    (ab && ab.byteLength > 5000 && !contentType.toLowerCase().includes("text/html")) ||
+    htmlXlsLegado;
+
+  if (!resp.ok || !ab || !ab.byteLength || !pareceXLS) {
+    let amostra = "";
+    try {
+      amostra = new TextDecoder("utf-8").decode(ab.slice(0, 1200));
+    } catch (e) {}
     etapas.push({
       etapa: "post xls direto não capturou arquivo",
       em: new Date().toISOString(),
-      detalhe: `Resposta não parece planilha real. magic=${magicArquivoGMAT(ab)}; motivo=${avaliacao.motivo}; amostra=${String(avaliacao.amostra||"").slice(0, 1000)}`
+      detalhe: `Resposta não parece XLS. Amostra: ${amostra.slice(0, 1000)}`
     });
     return null;
+  }
+
+  if (htmlXlsLegado) {
+    headers["content-disposition"] = headers["content-disposition"] || 'attachment; filename="PlanilhaMateriais.xls"';
+    headers["content-type"] = headers["content-type"] || "application/vnd.ms-excel";
+    etapas.push({
+      etapa: "post xls direto aceito como xls legado",
+      em: new Date().toISOString(),
+      detalhe: `GMAT retornou text/html com ${ab.byteLength} bytes no endpoint 2085. Aceito como PlanilhaMateriais.xls por padrão legado do GMAT.`
+    });
   }
 
   return {
@@ -1362,306 +1473,8 @@ async function baixarPlanilha2085PostDireto(page, etapas) {
     headers,
     arrayBuffer: ab,
     arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-    origem: "post-xls-direto-v137"
+    origem: htmlXlsLegado ? "post-xls-direto-html-legado-v136" : "post-xls-direto-v136"
   };
-}
-
-
-async function submeterPOST2085ComoFormularioReal(page, browser, etapas) {
-  // GMAT legado: o download real ocorre por navegação de formulário, não por fetch.
-  // Esta rotina cria um formulário POST real dentro do contexto do GMAT e submete
-  // para um target oculto, capturando a resposta de rede binária.
-  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
-  const params = paramsPOST2085PadraoGMAT();
-
-  let capturado = null;
-  const paginas = await browser.pages().catch(() => [page]);
-
-  async function anexar(pg, origem) {
-    try {
-      pg.on("response", async (response) => {
-        try {
-          if (capturado) return;
-          const url = String(response.url() || "");
-          if (!url.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do")) return;
-
-          const headers = response.headers();
-          const ab = await response.arrayBuffer();
-          const magic = ab && ab.byteLength >= 8
-            ? Array.from(new Uint8Array(ab.slice(0, 8))).map(b => b.toString(16).padStart(2, "0")).join(" ")
-            : "";
-
-          const ct = String(headers["content-type"] || "");
-          const cd = String(headers["content-disposition"] || "");
-          const xlsBinario = magic.startsWith("d0 cf 11 e0");
-          const pareceArquivo = xlsBinario ||
-            isExcelContentType(ct) ||
-            /attachment|xls|xlsx|octet/i.test(cd) ||
-            (ab && ab.byteLength > 80000 && !ct.toLowerCase().includes("text/html"));
-
-          etapas.push({
-            etapa: "form post navegação resposta",
-            em: new Date().toISOString(),
-            detalhe: `origem=${origem}; HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magic}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}`
-          });
-
-          if (response.ok() && pareceArquivo && ab && ab.byteLength) {
-            capturado = {
-              url,
-              status: response.status(),
-              headers,
-              arrayBuffer: ab,
-              arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-              origem: xlsBinario ? "form-post-navegacao-xls-binario-v138" : "form-post-navegacao-v138"
-            };
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
-  }
-
-  for (const pg of paginas) await anexar(pg, "pagina-existente");
-
-  try {
-    browser.on("targetcreated", async (target) => {
-      try {
-        const pg = await target.page();
-        if (pg) await anexar(pg, "targetcreated");
-      } catch (e) {}
-    });
-  } catch (e) {}
-
-  etapas.push({
-    etapa: "form post navegação",
-    em: new Date().toISOString(),
-    detalhe: `Criando formulário POST real para endpoint 2085 com ${Array.from(params.keys()).length} campos.`
-  });
-
-  // Executa dentro de um frame/página GMAT. Preferir frame uc2085; senão página principal.
-  let frameAlvo = allFrames(page).find(f => String(f.url() || "").includes("uc2085")) ||
-                  allFrames(page).find(f => String(f.url() || "").includes("gmat.procempa.com.br/gmat")) ||
-                  page.mainFrame();
-
-  await frameAlvo.evaluate((endpoint, entries) => {
-    const old = document.getElementById("__portal_da_form_2085_v138");
-    if (old) old.remove();
-
-    let iframe = document.getElementById("__portal_da_target_2085_v138");
-    if (!iframe) {
-      iframe = document.createElement("iframe");
-      iframe.name = "__portal_da_target_2085_v138";
-      iframe.id = "__portal_da_target_2085_v138";
-      iframe.style.position = "fixed";
-      iframe.style.left = "-9999px";
-      iframe.style.top = "-9999px";
-      iframe.style.width = "10px";
-      iframe.style.height = "10px";
-      document.body.appendChild(iframe);
-    }
-
-    const form = document.createElement("form");
-    form.id = "__portal_da_form_2085_v138";
-    form.method = "POST";
-    form.action = endpoint;
-    form.target = "__portal_da_target_2085_v138";
-    form.enctype = "application/x-www-form-urlencoded";
-    form.acceptCharset = "UTF-8";
-
-    for (const [k, v] of entries) {
-      const input = document.createElement("input");
-      input.type = "hidden";
-      input.name = k;
-      input.value = v;
-      form.appendChild(input);
-    }
-
-    document.body.appendChild(form);
-    form.submit();
-  }, endpoint, Array.from(params.entries()));
-
-  const started = Date.now();
-  while (!capturado && Date.now() - started < 60000) {
-    await wait(500);
-  }
-
-  if (capturado) return capturado;
-
-  etapas.push({
-    etapa: "form post navegação não capturou",
-    em: new Date().toISOString(),
-    detalhe: "Formulário real foi submetido, mas nenhuma resposta reconhecida como XLS binário/arquivo foi capturada em 60s."
-  });
-
-  return null;
-}
-
-
-async function submeterPOST2085PaginaLimpa(page, browser, etapas) {
-  // v141: evita qualquer referência persistente a Frame. O POST é realizado em uma
-  // página independente, mas dentro da mesma origem e com os cookies da sessão autenticada.
-  const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
-  const origemGMAT = "https://gmat.procempa.com.br/gmat/";
-  const params = paramsPOST2085PadraoGMAT();
-  let capturado = null;
-  let ultimaResposta = null;
-
-  etapas.push({
-    etapa: "form post pagina limpa",
-    em: new Date().toISOString(),
-    detalhe: `Abrindo página independente na mesma origem do GMAT para POST real do endpoint 2085 com ${Array.from(params.keys()).length} campos; sem reutilizar Frame.`
-  });
-
-  const pg = await browser.newPage();
-  await pg.setViewport({ width: 900, height: 700 }).catch(() => {});
-
-  try {
-    const cookies = await page.cookies("https://gmat.procempa.com.br");
-    if (cookies && cookies.length) {
-      await pg.setCookie(...cookies);
-      etapas.push({
-        etapa: "form post pagina limpa cookies",
-        em: new Date().toISOString(),
-        detalhe: `Cookies copiados: ${cookies.map(c => c.name).join(", ")}`
-      });
-    } else {
-      etapas.push({
-        etapa: "form post pagina limpa cookies aviso",
-        em: new Date().toISOString(),
-        detalhe: "Nenhum cookie da sessão GMAT foi encontrado para copiar."
-      });
-    }
-  } catch (e) {
-    etapas.push({
-      etapa: "form post pagina limpa cookies aviso",
-      em: new Date().toISOString(),
-      detalhe: e && e.message ? e.message : String(e)
-    });
-  }
-
-  // Importante: antes de criar o formulário, posiciona a página na própria origem GMAT.
-  // Isso evita um POST cross-site saindo de about:blank e reduz o risco de cookies SameSite
-  // deixarem de acompanhar a requisição.
-  try {
-    await pg.goto(origemGMAT, { waitUntil: "domcontentloaded", timeout: 30000 });
-    etapas.push({
-      etapa: "form post pagina limpa origem",
-      em: new Date().toISOString(),
-      detalhe: `Página preparada na origem autenticada: ${String(pg.url() || "").slice(0, 500)}`
-    });
-  } catch (e) {
-    etapas.push({
-      etapa: "form post pagina limpa origem aviso",
-      em: new Date().toISOString(),
-      detalhe: `Não foi possível estabilizar a página de apoio antes do POST: ${e && e.message ? e.message : String(e)}`
-    });
-  }
-
-  pg.on("response", async (response) => {
-    try {
-      if (capturado) return;
-      const url = String(response.url() || "");
-      if (!url.includes("/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do")) return;
-
-      const headers = response.headers();
-      const ab = await response.arrayBuffer();
-      const avaliacao = capturaParecePlanilhaGMAT(ab, headers, url);
-      const ct = String(headers["content-type"] || "");
-      const cd = String(headers["content-disposition"] || "");
-      const amostra = avaliacao.ok ? "" : String(avaliacao.amostra || textoAmostraGMAT(ab, 1200)).slice(0, 1200);
-
-      ultimaResposta = {
-        status: response.status(),
-        bytes: ab ? ab.byteLength : 0,
-        magic: magicArquivoGMAT(ab),
-        contentType: ct,
-        contentDisposition: cd,
-        url,
-        motivo: avaliacao.motivo,
-        amostra
-      };
-
-      etapas.push({
-        etapa: "form post pagina limpa resposta",
-        em: new Date().toISOString(),
-        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; magic=${magicArquivoGMAT(ab)}; avaliacao=${avaliacao.motivo}; content-type=${ct}; content-disposition=${cd}; url=${url.slice(0, 700)}${amostra ? `; amostra=${amostra}` : ""}`
-      });
-
-      if (response.ok() && avaliacao.ok && ab && ab.byteLength) {
-        capturado = {
-          url,
-          status: response.status(),
-          headers,
-          arrayBuffer: ab,
-          arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-          origem: "pagina-limpa-mesma-origem-v141"
-        };
-      }
-    } catch (e) {
-      etapas.push({
-        etapa: "form post pagina limpa resposta erro",
-        em: new Date().toISOString(),
-        detalhe: e && e.message ? e.message : String(e)
-      });
-    }
-  });
-
-  const esc = s => String(s || "").replace(/&/g, "&amp;").replace(/\"/g, "&quot;").replace(/</g, "&lt;");
-  const htmlInputs = Array.from(params.entries()).map(([k, v]) =>
-    `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`
-  ).join("\n");
-
-  const html = `<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>POST GMAT 2085</title></head>
-<body>
-<form id="f" method="POST" action="${endpoint}" enctype="application/x-www-form-urlencoded">
-${htmlInputs}
-</form>
-</body>
-</html>`;
-
-  try {
-    await pg.setContent(html, { waitUntil: "domcontentloaded", timeout: 15000 });
-    etapas.push({
-      etapa: "form post pagina limpa submit",
-      em: new Date().toISOString(),
-      detalhe: "Submetendo uma única vez o formulário real no contexto da página independente."
-    });
-    await pg.evaluate(() => {
-      const f = document.getElementById("f");
-      if (!f) throw new Error("Formulário auxiliar 2085 não foi criado.");
-      f.submit();
-    });
-  } catch (e) {
-    etapas.push({
-      etapa: "form post pagina limpa submit erro",
-      em: new Date().toISOString(),
-      detalhe: e && e.message ? e.message : String(e)
-    });
-    try { await pg.close(); } catch (e2) {}
-    return null;
-  }
-
-  const started = Date.now();
-  while (!capturado && Date.now() - started < 70000) {
-    await wait(500);
-  }
-
-  if (capturado) {
-    try { await pg.close(); } catch (e) {}
-    return capturado;
-  }
-
-  const txt = await pg.evaluate(() => document.body ? document.body.innerText.slice(0, 1200) : "").catch(() => "");
-  etapas.push({
-    etapa: "form post pagina limpa não capturou",
-    em: new Date().toISOString(),
-    detalhe: ultimaResposta
-      ? `Resposta do endpoint não foi reconhecida como planilha. HTTP=${ultimaResposta.status}; bytes=${ultimaResposta.bytes}; magic=${ultimaResposta.magic}; content-type=${ultimaResposta.contentType}; content-disposition=${ultimaResposta.contentDisposition}; motivo=${ultimaResposta.motivo}; amostra=${String(ultimaResposta.amostra || "").slice(0, 1000)}`
-      : `Nenhuma resposta do endpoint 2085 foi capturada. Texto atual: ${txt.slice(0, 1000)}`
-  });
-  try { await pg.close(); } catch (e) {}
-  return null;
 }
 
 
@@ -1675,7 +1488,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v141",
+        versao: "v142",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
