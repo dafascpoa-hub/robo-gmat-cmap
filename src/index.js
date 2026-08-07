@@ -291,7 +291,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   let resolver;
   const promessa = new Promise(resolve => { resolver = resolve; });
 
-  // v147: radar completo de rede ativo somente durante a geração.
+  // v148: radar completo de rede ativo somente durante a geração.
   let radarAtivo = false;
   const radarRequests = new Map();
   const radarResumo = [];
@@ -323,7 +323,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v147"
+        origem: "clique-real-response-v148"
       });
       const ct = textValue(headers["content-type"]).toLowerCase();
       const cd = textValue(headers["content-disposition"]).toLowerCase();
@@ -340,7 +340,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v147: NÃO intercepta a resposta com Fetch.enable.
+  // v148: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -357,26 +357,26 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
 
-    // v147: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // v148: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
     // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
     // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
     try {
       await cdp.send("Network.setUserAgentOverride", {
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        acceptLanguage: "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        acceptLanguage: "pt-BR,pt,en-US,en",
         platform: "Win32",
         userAgentMetadata: {
           brands: [
-            { brand: "Not/A)Brand", version: "99" },
-            { brand: "Google Chrome", version: "128" },
-            { brand: "Chromium", version: "128" }
+            { brand: "Not;A=Brand", version: "8" },
+            { brand: "Chromium", version: "150" },
+            { brand: "Google Chrome", version: "150" }
           ],
           fullVersionList: [
-            { brand: "Not/A)Brand", version: "99.0.0.0" },
-            { brand: "Google Chrome", version: "128.0.0.0" },
-            { brand: "Chromium", version: "128.0.0.0" }
+            { brand: "Not;A=Brand", version: "8.0.0.0" },
+            { brand: "Chromium", version: "150.0.0.0" },
+            { brand: "Google Chrome", version: "150.0.0.0" }
           ],
-          fullVersion: "128.0.0.0",
+          fullVersion: "150.0.0.0",
           platform: "Windows",
           platformVersion: "10.0.0",
           architecture: "x86",
@@ -386,12 +386,23 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
           wow64: false
         }
       });
-      await cdp.send("Network.setExtraHTTPHeaders", {
-        headers: {
-          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
-        }
-      });
-      etapas.push({
+      try {
+        await cdp.send("Network.setExtraHTTPHeaders", {
+          headers: {
+            "sec-ch-ua": "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\""
+          }
+        });
+      } catch (e) {
+        etapas.push({
+          etapa: "aviso sec-ch-ua manual",
+          em: new Date().toISOString(),
+          detalhe: e && e.message ? e.message : String(e)
+        });
+      }
+
+etapas.push({
         etapa: "user-agent forçado no Network",
         em: new Date().toISOString(),
         detalhe: "Network.setUserAgentOverride aplicado na mesma sessão CDP usada pelo POST do relatório 2085."
@@ -469,7 +480,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
             ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
           } catch(e){ bodyErro=e&&e.message?e.message:String(e); }
           if (ab&&ab.byteLength) {
-            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v147"});
+            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v148"});
             etapas.push({etapa:ok?"Network radar capturou planilha real":"Network radar observou candidato/não-XLS",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; bytes=${ab.byteLength}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
           } else {
             etapas.push({etapa:"Network radar viu candidato sem corpo acessível",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; erro=${bodyErro}`});
@@ -495,7 +506,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
           try { while(true){ const r=await cdp.send("IO.read",{handle:stream,size:65536}); const bytes=r.base64Encoded?bytesFromBase64(r.data||""):new TextEncoder().encode(r.data||""); partes.push(bytes); total+=bytes.byteLength; if(r.eof) break; if(total>20*1024*1024) throw new Error("Resposta excedeu 20 MB."); } } finally { try{await cdp.send("IO.close",{handle:stream});}catch(e){} }
           const combinado=new Uint8Array(total); let pos=0; for(const parte of partes){ combinado.set(parte,pos); pos+=parte.byteLength; }
           const ab=combinado.buffer.slice(combinado.byteOffset,combinado.byteOffset+combinado.byteLength);
-          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v147"});
+          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v148"});
           etapas.push({etapa:ok?"Fetch stream capturou planilha real":"Fetch stream candidato não era planilha",em:new Date().toISOString(),detalhe:`url=${url}; bytes=${total}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
         } catch(e){ etapas.push({etapa:"Fetch stream erro",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); try{await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId}));}catch(e2){} }
       });
@@ -596,7 +607,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         detalhe: JSON.stringify(downloadInfo)
       });
     }
-    etapas.push({ etapa: "resumo radar v147", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
+    etapas.push({ etapa: "resumo radar v148", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
     return capturado;
   } finally {
     radarAtivo = false;
@@ -1029,25 +1040,25 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v147: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v148: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        acceptLanguage: "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        acceptLanguage: "pt-BR,pt,en-US,en",
         platform: "Win32",
         userAgentMetadata: {
           brands: [
-            { brand: "Not/A)Brand", version: "99" },
-            { brand: "Google Chrome", version: "128" },
-            { brand: "Chromium", version: "128" }
+            { brand: "Not;A=Brand", version: "8" },
+            { brand: "Chromium", version: "150" },
+            { brand: "Google Chrome", version: "150" }
           ],
           fullVersionList: [
-            { brand: "Not/A)Brand", version: "99.0.0.0" },
-            { brand: "Google Chrome", version: "128.0.0.0" },
-            { brand: "Chromium", version: "128.0.0.0" }
+            { brand: "Not;A=Brand", version: "8.0.0.0" },
+            { brand: "Chromium", version: "150.0.0.0" },
+            { brand: "Google Chrome", version: "150.0.0.0" }
           ],
-          fullVersion: "128.0.0.0",
+          fullVersion: "150.0.0.0",
           platform: "Windows",
           platformVersion: "10.0.0",
           architecture: "x86",
@@ -1218,7 +1229,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v147 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
+        "A v148 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1777,7 +1788,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v147",
+        versao: "v148",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
