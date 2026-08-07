@@ -291,6 +291,14 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   let resolver;
   const promessa = new Promise(resolve => { resolver = resolve; });
 
+  // v147: radar completo de rede ativo somente durante a geração.
+  let radarAtivo = false;
+  const radarRequests = new Map();
+  const radarResumo = [];
+  const radarPush = (item) => {
+    try { radarResumo.push(item); if (radarResumo.length > 80) radarResumo.shift(); } catch (e) {}
+  };
+
   const aceitar = (candidato) => {
     if (capturado || !candidato || !candidato.arrayBuffer) return false;
     if (!parecePlanilhaReal(candidato.arrayBuffer, candidato.headers || {})) return false;
@@ -304,7 +312,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
     try {
       const req = response.request();
       const url = String(response.url() || "");
-      if (!url.includes(endpointTrecho) || String(req.method() || "").toUpperCase() !== "POST") return;
+      if (!radarAtivo) return;
       const headers = response.headers();
       const buf = await response.buffer();
       const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -315,12 +323,16 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v146"
+        origem: "clique-real-response-v147"
       });
-      etapas.push({
-        etapa: ok ? "response do clique contém XLS real" : "response do clique não era XLS",
+      const ct = textValue(headers["content-type"]).toLowerCase();
+      const cd = textValue(headers["content-disposition"]).toLowerCase();
+      const interessante = ok || url.includes(endpointTrecho) || cd.includes("attachment") || /(excel|spreadsheet|csv|octet-stream|xls|xlsx)/i.test(ct) || /\.(xls|xlsx|csv)(?:\?|$)/i.test(url);
+      radarPush({ tipo: "response", url, method: String(req.method() || ""), status: response.status(), contentType: headers["content-type"] || "", contentDisposition: headers["content-disposition"] || "", bytes: ab ? ab.byteLength : 0 });
+      if (interessante) etapas.push({
+        etapa: ok ? "radar response capturou planilha real" : "radar response observou candidato/não-XLS",
         em: new Date().toISOString(),
-        detalhe: `HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; post=${postData.slice(0, 1400)}`
+        detalhe: `url=${url}; HTTP ${response.status()}; bytes=${ab ? ab.byteLength : 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; post=${postData.slice(0, 1000)}`
       });
     } catch (e) {
       etapas.push({ etapa: "response clique erro", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
@@ -328,7 +340,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v146: NÃO intercepta a resposta com Fetch.enable.
+  // v147: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -345,7 +357,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
 
-    // v146: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // v147: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
     // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
     // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
     try {
@@ -409,25 +421,17 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
 
     cdp.on("Network.requestWillBeSent", ev => {
       try {
+        if (!radarAtivo) return;
         const url = String(ev.request && ev.request.url || "");
         const metodo = String(ev.request && ev.request.method || "").toUpperCase();
-        if (!url.includes(endpointTrecho) || metodo !== "POST") return;
-        requestsCDP.set(ev.requestId, {
-          url,
-          method: metodo,
-          postData: textValue(ev.request && ev.request.postData),
-          headers: ev.request && ev.request.headers ? ev.request.headers : {}
-        });
-        etapas.push({
-          etapa: "POST real observado sem interceptação",
-          em: new Date().toISOString(),
-          detalhe: JSON.stringify({
-            url,
-            method: metodo,
-            headers: ev.request && ev.request.headers ? ev.request.headers : {},
-            post: textValue(ev.request && ev.request.postData).slice(0, 1600)
-          }).slice(0, 3500)
-        });
+        const postData = textValue(ev.request && ev.request.postData);
+        const item = { url, method: metodo, resourceType: textValue(ev.type), postData, headers: ev.request && ev.request.headers ? ev.request.headers : {}, redirectFrom: ev.redirectResponse ? textValue(ev.redirectResponse.url) : "" };
+        radarRequests.set(ev.requestId, item);
+        radarPush({ tipo: "request", url, method: metodo, resourceType: textValue(ev.type), redirectFrom: item.redirectFrom });
+        if (url.includes(endpointTrecho) && metodo === "POST") {
+          requestsCDP.set(ev.requestId, item);
+          etapas.push({ etapa: "POST real observado pelo radar", em: new Date().toISOString(), detalhe: JSON.stringify({ url, method: metodo, resourceType: textValue(ev.type), headers: item.headers, post: postData.slice(0,1600) }).slice(0,3500) });
+        }
       } catch (e) {}
     });
 
@@ -446,54 +450,57 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
 
     cdp.on("Network.responseReceived", async ev => {
       try {
-        const req = requestsCDP.get(ev.requestId);
-        if (!req) return;
+        if (!radarAtivo) return;
+        const req = radarRequests.get(ev.requestId) || requestsCDP.get(ev.requestId) || {};
         const resp = ev.response || {};
         const headers = {};
         for (const [k,v] of Object.entries(resp.headers || {})) headers[String(k).toLowerCase()] = textValue(v);
-
-        // Network.getResponseBody observa sem pausar/interceptar a resposta.
-        let ab = null;
-        let bodyErro = "";
-        try {
-          const body = await cdp.send("Network.getResponseBody", { requestId: ev.requestId });
-          const bytes = body && body.base64Encoded
-            ? bytesFromBase64(body.body)
-            : new TextEncoder().encode(body && body.body || "");
-          ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-        } catch (e) {
-          bodyErro = e && e.message ? e.message : String(e);
+        const url = String(resp.url || req.url || "");
+        const ct = textValue(headers["content-type"]).toLowerCase();
+        const cd = textValue(headers["content-disposition"]).toLowerCase();
+        const mime = textValue(resp.mimeType).toLowerCase();
+        const candidatoFormato = cd.includes("attachment") || /(excel|spreadsheet|csv|octet-stream|xls|xlsx)/i.test(ct) || /(excel|spreadsheet|csv|octet-stream|xls|xlsx)/i.test(mime) || /\.(xls|xlsx|csv)(?:\?|$)/i.test(url);
+        radarPush({ tipo: "network-response", url, status: Number(resp.status||0), mimeType: resp.mimeType||"", contentType: headers["content-type"]||"", contentDisposition: headers["content-disposition"]||"", resourceType: textValue(ev.type) });
+        if (candidatoFormato || url.includes(endpointTrecho)) {
+          let ab=null, bodyErro="";
+          try {
+            const body=await cdp.send("Network.getResponseBody",{requestId:ev.requestId});
+            const bytes=body&&body.base64Encoded ? bytesFromBase64(body.body) : new TextEncoder().encode(body&&body.body||"");
+            ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+          } catch(e){ bodyErro=e&&e.message?e.message:String(e); }
+          if (ab&&ab.byteLength) {
+            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v147"});
+            etapas.push({etapa:ok?"Network radar capturou planilha real":"Network radar observou candidato/não-XLS",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; bytes=${ab.byteLength}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
+          } else {
+            etapas.push({etapa:"Network radar viu candidato sem corpo acessível",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; erro=${bodyErro}`});
+          }
         }
-
-        if (ab && ab.byteLength) {
-          const ok = aceitar({
-            url: String(resp.url || req.url || endpoint),
-            status: Number(resp.status || 0),
-            headers,
-            arrayBuffer: ab,
-            arquivoNome: parseFileName(headers),
-            origem: "network-response-v146"
-          });
-          etapas.push({
-            etapa: ok ? "Network capturou XLS real" : "Network observou resposta não-XLS",
-            em: new Date().toISOString(),
-            detalhe: `HTTP ${resp.status || 0}; bytes=${ab.byteLength}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}`
-          });
-        } else {
-          etapas.push({
-            etapa: "Network viu resposta mas corpo não ficou disponível",
-            em: new Date().toISOString(),
-            detalhe: `HTTP ${resp.status || 0}; content-type=${headers["content-type"] || ""}; content-disposition=${headers["content-disposition"] || ""}; erro=${bodyErro}`
-          });
-        }
-      } catch (e) {
-        etapas.push({
-          etapa: "Network response diagnóstico falhou",
-          em: new Date().toISOString(),
-          detalhe: e && e.message ? e.message : String(e)
-        });
-      }
+      } catch(e){ etapas.push({etapa:"Network radar diagnóstico falhou",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); }
     });
+
+    try {
+      await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Response" }] });
+      cdp.on("Fetch.requestPaused", async ev => {
+        const requestId=ev.requestId;
+        try {
+          const url=textValue(ev.request&&ev.request.url);
+          const headers={}; for(const h of (ev.responseHeaders||[])) headers[String(h.name||"").toLowerCase()]=textValue(h.value);
+          const ct=textValue(headers["content-type"]).toLowerCase(), cd=textValue(headers["content-disposition"]).toLowerCase();
+          const candidato=radarAtivo&&(cd.includes("attachment")||/(excel|spreadsheet|csv|octet-stream|xls|xlsx)/i.test(ct)||/\.(xls|xlsx|csv)(?:\?|$)/i.test(url));
+          if(!candidato){ await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId})); return; }
+          etapas.push({etapa:"Fetch stream encontrou candidato",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${ev.responseStatusCode||0}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
+          let stream=null; try { const r=await cdp.send("Fetch.takeResponseBodyAsStream",{requestId}); stream=r&&r.stream; } catch(e){ etapas.push({etapa:"Fetch stream não pôde abrir corpo",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); }
+          if(!stream){ await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId})); return; }
+          const partes=[]; let total=0;
+          try { while(true){ const r=await cdp.send("IO.read",{handle:stream,size:65536}); const bytes=r.base64Encoded?bytesFromBase64(r.data||""):new TextEncoder().encode(r.data||""); partes.push(bytes); total+=bytes.byteLength; if(r.eof) break; if(total>20*1024*1024) throw new Error("Resposta excedeu 20 MB."); } } finally { try{await cdp.send("IO.close",{handle:stream});}catch(e){} }
+          const combinado=new Uint8Array(total); let pos=0; for(const parte of partes){ combinado.set(parte,pos); pos+=parte.byteLength; }
+          const ab=combinado.buffer.slice(combinado.byteOffset,combinado.byteOffset+combinado.byteLength);
+          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v147"});
+          etapas.push({etapa:ok?"Fetch stream capturou planilha real":"Fetch stream candidato não era planilha",em:new Date().toISOString(),detalhe:`url=${url}; bytes=${total}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
+        } catch(e){ etapas.push({etapa:"Fetch stream erro",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); try{await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId}));}catch(e2){} }
+      });
+      etapas.push({etapa:"radar Fetch stream armado",em:new Date().toISOString(),detalhe:"Observando qualquer resposta e lendo como stream apenas candidatos XLS/XLSX/CSV/octet-stream/attachment."});
+    } catch(e){ etapas.push({etapa:"radar Fetch stream indisponível",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); }
 
     cdp.on("Browser.downloadWillBegin", ev => {
       try {
@@ -544,6 +551,8 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   }
 
   try {
+    radarAtivo = true;
+    etapas.push({ etapa: "radar completo de rede ativado", em: new Date().toISOString(), detalhe: "Janela aberta antes do primeiro clique: requests, responses, redirects, MIME types, CSV/XLS/XLSX/octet-stream e attachments serão observados." });
     etapas.push({ etapa: "clicando botão real Gerar Planilha", em: new Date().toISOString(), detalhe: "Primeira tentativa sem alterar o formulário." });
     const clicou = await clicarBotaoReal2085(localizado.frame, false);
     if (!clicou) throw new Error("Botão real Gerar Planilha não localizado no formulário 2085.");
@@ -587,9 +596,12 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         detalhe: JSON.stringify(downloadInfo)
       });
     }
+    etapas.push({ etapa: "resumo radar v147", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
     return capturado;
   } finally {
+    radarAtivo = false;
     try { page.off("response", responseHandler); } catch (e) {}
+    try { if (cdp) await cdp.send("Fetch.disable"); } catch (e) {}
     try { if (cdp) await cdp.detach(); } catch (e) {}
   }
 }
@@ -1017,7 +1029,7 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v146: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v147: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
@@ -1206,7 +1218,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v146 mantém o POST real do formulário, não usa Fetch.enable (que pode interferir no download), observa Network e os eventos nativos de download do Chromium e só aceita bytes que sejam XLS real. " +
+        "A v147 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1765,7 +1777,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v146",
+        versao: "v147",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
