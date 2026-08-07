@@ -315,7 +315,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v145"
+        origem: "clique-real-response-v146"
       });
       etapas.push({
         etapa: ok ? "response do clique contém XLS real" : "response do clique não era XLS",
@@ -328,7 +328,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v145: NÃO intercepta a resposta com Fetch.enable.
+  // v146: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -344,6 +344,53 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxResourceBufferSize: 10 * 1024 * 1024,
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
+
+    // v146: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
+    // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
+    try {
+      await cdp.send("Network.setUserAgentOverride", {
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        acceptLanguage: "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        platform: "Win32",
+        userAgentMetadata: {
+          brands: [
+            { brand: "Not/A)Brand", version: "99" },
+            { brand: "Google Chrome", version: "128" },
+            { brand: "Chromium", version: "128" }
+          ],
+          fullVersionList: [
+            { brand: "Not/A)Brand", version: "99.0.0.0" },
+            { brand: "Google Chrome", version: "128.0.0.0" },
+            { brand: "Chromium", version: "128.0.0.0" }
+          ],
+          fullVersion: "128.0.0.0",
+          platform: "Windows",
+          platformVersion: "10.0.0",
+          architecture: "x86",
+          model: "",
+          mobile: false,
+          bitness: "64",
+          wow64: false
+        }
+      });
+      await cdp.send("Network.setExtraHTTPHeaders", {
+        headers: {
+          "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+        }
+      });
+      etapas.push({
+        etapa: "user-agent forçado no Network",
+        em: new Date().toISOString(),
+        detalhe: "Network.setUserAgentOverride aplicado na mesma sessão CDP usada pelo POST do relatório 2085."
+      });
+    } catch (e) {
+      etapas.push({
+        etapa: "falha ao forçar user-agent no Network",
+        em: new Date().toISOString(),
+        detalhe: e && e.message ? e.message : String(e)
+      });
+    }
 
     // Não é obrigatório para a captura, mas habilita eventos de download quando suportado.
     try {
@@ -425,7 +472,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
             headers,
             arrayBuffer: ab,
             arquivoNome: parseFileName(headers),
-            origem: "network-response-v145"
+            origem: "network-response-v146"
           });
           etapas.push({
             etapa: ok ? "Network capturou XLS real" : "Network observou resposta não-XLS",
@@ -970,7 +1017,7 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v145: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v146: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
@@ -1159,7 +1206,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v145 mantém o POST real do formulário, não usa Fetch.enable (que pode interferir no download), observa Network e os eventos nativos de download do Chromium e só aceita bytes que sejam XLS real. " +
+        "A v146 mantém o POST real do formulário, não usa Fetch.enable (que pode interferir no download), observa Network e os eventos nativos de download do Chromium e só aceita bytes que sejam XLS real. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1718,7 +1765,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v145",
+        versao: "v146",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
