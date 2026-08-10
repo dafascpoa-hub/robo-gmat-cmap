@@ -259,7 +259,7 @@ async function submeterFormulario2085Nativo(frame, modo = "submit-direto") {
 async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   const endpointTrecho = "/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
-  // v149: o HTML retornado pelo POST chama printXLS('perform=run'),
+  // v150: o HTML retornado pelo POST chama printXLS('perform=run'),
   // que abre este endpoint real da exportação.
   const endpointXLS = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaXLS.do?perform=run&null";
   let localizado = await localizarFormulario2085Vivo(page);
@@ -294,7 +294,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   let resolver;
   const promessa = new Promise(resolve => { resolver = resolve; });
 
-  // v149: radar completo de rede ativo somente durante a geração.
+  // v150: radar completo de rede ativo somente durante a geração.
   let radarAtivo = false;
   const radarRequests = new Map();
   const radarResumo = [];
@@ -326,7 +326,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v149"
+        origem: "clique-real-response-v150"
       });
       const ct = textValue(headers["content-type"]).toLowerCase();
       const cd = textValue(headers["content-disposition"]).toLowerCase();
@@ -343,7 +343,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v149: NÃO intercepta a resposta com Fetch.enable.
+  // v150: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -360,7 +360,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
 
-    // v149: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // v150: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
     // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
     // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
     try {
@@ -483,7 +483,7 @@ etapas.push({
             ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
           } catch(e){ bodyErro=e&&e.message?e.message:String(e); }
           if (ab&&ab.byteLength) {
-            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v149"});
+            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v150"});
             etapas.push({etapa:ok?"Network radar capturou planilha real":"Network radar observou candidato/não-XLS",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; bytes=${ab.byteLength}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
           } else {
             etapas.push({etapa:"Network radar viu candidato sem corpo acessível",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; erro=${bodyErro}`});
@@ -509,7 +509,7 @@ etapas.push({
           try { while(true){ const r=await cdp.send("IO.read",{handle:stream,size:65536}); const bytes=r.base64Encoded?bytesFromBase64(r.data||""):new TextEncoder().encode(r.data||""); partes.push(bytes); total+=bytes.byteLength; if(r.eof) break; if(total>20*1024*1024) throw new Error("Resposta excedeu 20 MB."); } } finally { try{await cdp.send("IO.close",{handle:stream});}catch(e){} }
           const combinado=new Uint8Array(total); let pos=0; for(const parte of partes){ combinado.set(parte,pos); pos+=parte.byteLength; }
           const ab=combinado.buffer.slice(combinado.byteOffset,combinado.byteOffset+combinado.byteLength);
-          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v149"});
+          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v150"});
           etapas.push({etapa:ok?"Fetch stream capturou planilha real":"Fetch stream candidato não era planilha",em:new Date().toISOString(),detalhe:`url=${url}; bytes=${total}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
         } catch(e){ etapas.push({etapa:"Fetch stream erro",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); try{await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId}));}catch(e2){} }
       });
@@ -591,7 +591,7 @@ etapas.push({
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-        origem: "endpoint-xls-real-v149"
+        origem: "endpoint-xls-real-v150"
       });
 
       etapas.push({
@@ -651,7 +651,7 @@ etapas.push({
     let resultado = await aguardar(18000);
     if (resultado) return resultado;
 
-    // v149: o POST retornar HTML é esperado. O próprio HTML executa
+    // v150: o POST retornar HTML é esperado. O próprio HTML executa
     // printXLS('perform=run') e abre o endpoint real da planilha.
     resultado = await capturarEndpointXLSReal();
     if (resultado) return resultado;
@@ -692,7 +692,7 @@ etapas.push({
         detalhe: JSON.stringify(downloadInfo)
       });
     }
-    etapas.push({ etapa: "resumo radar v149", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
+    etapas.push({ etapa: "resumo radar v150", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
     return capturado;
   } finally {
     radarAtivo = false;
@@ -745,6 +745,109 @@ async function pageAnyFrameUrlHas(page, trecho) {
     } catch (e) {}
   }
   return false;
+}
+
+
+function periodo12MesesBR() {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(new Date()).reduce((a,p)=>{ if(p.type!=="literal") a[p.type]=p.value; return a; }, {});
+  const ano = Number(partes.year), mes = Number(partes.month), dia = Number(partes.day);
+  const fim = `${String(dia).padStart(2,"0")}/${String(mes).padStart(2,"0")}/${ano}`;
+  const iniDate = new Date(Date.UTC(ano-1, mes-1, dia));
+  const inicio = `${String(iniDate.getUTCDate()).padStart(2,"0")}/${String(iniDate.getUTCMonth()+1).padStart(2,"0")}/${iniDate.getUTCFullYear()}`;
+  return {inicio, fim};
+}
+
+async function capturarPlanilha2033Consumo(page, etapas) {
+  const urlPesquisa = "https://gmat.procempa.com.br/gmat/uc2033/consultaMateriaisConsumoPesquisa.do?viaMenu=true";
+  const urlXLS = "https://gmat.procempa.com.br/gmat/uc2033/consultaMateriaisConsumoPlanilha.do?perform=run&null";
+  const periodo = periodo12MesesBR();
+
+  etapas.push({etapa:"abrindo relatório 2033 consumo", em:new Date().toISOString(), detalhe:`Período ${periodo.inicio} a ${periodo.fim}; almoxarifado 845.`});
+  await page.goto(urlPesquisa, {waitUntil:"domcontentloaded", timeout:30000});
+  await wait(900);
+
+  const preparado = await page.evaluate(({inicio,fim}) => {
+    const form = document.forms?.["consultaMateriaisConsumoPesquisaForm"] ||
+      document.querySelector('form[name="consultaMateriaisConsumoPesquisaForm"],form[action*="consultaMateriaisConsumoPesquisa.do"]');
+    if(!form) return {ok:false,motivo:"form 2033 ausente"};
+    const set=(name,value)=>{
+      let el=form.elements?.[name];
+      if(el && typeof el.length==="number" && !el.tagName) el=el[0];
+      if(!el){ el=document.createElement("input"); el.type="hidden"; el.name=name; form.appendChild(el); }
+      el.value=value;
+    };
+    set("perform","SHEET");
+    set("actionForward","success");
+    set("strutsFormName","consultaMateriaisConsumoPesquisaForm");
+    set("user","");
+    set("dominio","");
+    set("validate","true");
+    set("printPerform","SHEET");
+    set("pesquisar","false");
+    set("chave","");
+    set("tabController.activeTab","1");
+    set("tabController.nextTab","1");
+    set("comboOrgao.id","87");
+    set("comboAlmoxarifado.id","845");
+    set("searchObject.codMaterial","");
+    set("comboOperacao.id","11");
+    set("filtro.dataInicioOperacao",inicio);
+    set("filtro.dataFimOperacao",fim);
+    set("comboGrupoUnidAdm.id","");
+    set("comboUnidAdm.id","");
+    set("defaultSearch.pageSize","0");
+    set("defaultSearch.orderField","");
+    set("defaultSearch.orderDirection","");
+    return {ok:true, post:Array.from(new FormData(form).entries()).map(([k,v])=>`${k}=${String(v)}`).join("&").slice(0,1800)};
+  }, periodo);
+
+  if(!preparado?.ok) throw new Error("Não foi possível preparar relatório 2033: "+(preparado?.motivo||"form ausente"));
+  etapas.push({etapa:"relatório 2033 preparado", em:new Date().toISOString(), detalhe:preparado.post});
+
+  await Promise.allSettled([
+    page.waitForNavigation({waitUntil:"domcontentloaded", timeout:20000}),
+    page.evaluate(() => {
+      const form = document.forms?.["consultaMateriaisConsumoPesquisaForm"] ||
+        document.querySelector('form[name="consultaMateriaisConsumoPesquisaForm"],form[action*="consultaMateriaisConsumoPesquisa.do"]');
+      if(!form) throw new Error("form 2033 ausente no submit");
+      if(typeof window.submitForm==="function") window.submitForm("", "SHEET");
+      else HTMLFormElement.prototype.submit.call(form);
+    })
+  ]);
+  await wait(900);
+
+  etapas.push({etapa:"acionando endpoint real da planilha 2033", em:new Date().toISOString(), detalhe:urlXLS});
+  const r = await page.evaluate(async url => {
+    const resp=await fetch(url,{method:"GET",credentials:"include",cache:"no-store"});
+    const buf=await resp.arrayBuffer();
+    const bytes=new Uint8Array(buf);
+    let bin=""; const passo=0x8000;
+    for(let i=0;i<bytes.length;i+=passo) bin+=String.fromCharCode(...bytes.subarray(i,i+passo));
+    return {
+      status:resp.status,url:resp.url,
+      contentType:resp.headers.get("content-type")||"",
+      contentDisposition:resp.headers.get("content-disposition")||"",
+      base64:btoa(bin),bytes:bytes.length
+    };
+  }, urlXLS);
+
+  const bytes=bytesFromBase64(r.base64||"");
+  const ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
+  const headers={"content-type":r.contentType||"","content-disposition":r.contentDisposition||""};
+  if(!parecePlanilhaReal(ab,headers)){
+    let amostra=""; try{amostra=new TextDecoder("windows-1252").decode(bytes.slice(0,1000));}catch(e){}
+    throw new Error(`Relatório 2033 não retornou XLS real. HTTP ${r.status}; bytes=${r.bytes}; type=${r.contentType}; amostra=${amostra.slice(0,350)}`);
+  }
+
+  etapas.push({etapa:"planilha 2033 capturada", em:new Date().toISOString(), detalhe:`${r.bytes} bytes; período ${periodo.inicio} a ${periodo.fim}.`});
+  return {
+    url:r.url||urlXLS,status:Number(r.status||0),headers,arrayBuffer:ab,
+    arquivoNome:parseFileName(headers)||"CONSUMO.xls",
+    origem:"endpoint-consumo-2033-v150",periodo
+  };
 }
 
 async function confirmarTelaRelatorio2085(page) {
@@ -1125,7 +1228,7 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v149: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v150: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
@@ -1314,18 +1417,30 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v149 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
+        "A v150 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
 
-    log("planilha capturada");
+    log("planilha 2085 capturada");
+
+    log("capturando relatório 2033 consumo");
+    const capturedConsumo = await capturarPlanilha2033Consumo(page, etapas);
+    if(!capturedConsumo) throw new Error("Planilha 2033 não foi capturada.");
+
     const hash = await sha256Hex(captured.arrayBuffer);
     const tamanho = captured.arrayBuffer.byteLength;
     const bytes = new Uint8Array(captured.arrayBuffer);
     let binary = "";
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
     const base64 = btoa(binary);
+
+    const consumoHash = await sha256Hex(capturedConsumo.arrayBuffer);
+    const consumoTamanho = capturedConsumo.arrayBuffer.byteLength;
+    const consumoBytes = new Uint8Array(capturedConsumo.arrayBuffer);
+    let consumoBinary = "";
+    for(let i=0;i<consumoBytes.length;i++) consumoBinary += String.fromCharCode(consumoBytes[i]);
+    const consumoBase64 = btoa(consumoBinary);
 
     return json({
       ok: true,
@@ -1340,6 +1455,16 @@ async function atualizarEstoqueGMAT(request, env) {
       origemCaptura: captured.origem || "",
       urlCaptura: captured.url || "",
       arquivoBase64: base64,
+      consumoRelatorio: "2033 - Materiais Consolidados por Consumo",
+      consumoArquivoNome: capturedConsumo.arquivoNome || "CONSUMO.xls",
+      consumoArquivoTamanho: consumoTamanho,
+      consumoArquivoHash: consumoHash,
+      consumoContentType: capturedConsumo.headers["content-type"] || "application/vnd.ms-excel",
+      consumoOrigemCaptura: capturedConsumo.origem || "",
+      consumoUrlCaptura: capturedConsumo.url || "",
+      consumoArquivoBase64: consumoBase64,
+      consumoPeriodoInicio: capturedConsumo.periodo?.inicio || "",
+      consumoPeriodoFim: capturedConsumo.periodo?.fim || "",
       etapas,
       concluidoEm: new Date().toISOString()
     });
@@ -1873,7 +1998,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v149",
+        versao: "v150",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
