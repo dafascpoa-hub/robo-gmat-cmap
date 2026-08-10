@@ -259,6 +259,9 @@ async function submeterFormulario2085Nativo(frame, modo = "submit-direto") {
 async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   const endpointTrecho = "/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
+  // v149: o HTML retornado pelo POST chama printXLS('perform=run'),
+  // que abre este endpoint real da exportação.
+  const endpointXLS = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaXLS.do?perform=run&null";
   let localizado = await localizarFormulario2085Vivo(page);
 
   if (!localizado) {
@@ -291,7 +294,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   let resolver;
   const promessa = new Promise(resolve => { resolver = resolve; });
 
-  // v148: radar completo de rede ativo somente durante a geração.
+  // v149: radar completo de rede ativo somente durante a geração.
   let radarAtivo = false;
   const radarRequests = new Map();
   const radarResumo = [];
@@ -323,7 +326,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v148"
+        origem: "clique-real-response-v149"
       });
       const ct = textValue(headers["content-type"]).toLowerCase();
       const cd = textValue(headers["content-disposition"]).toLowerCase();
@@ -340,7 +343,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v148: NÃO intercepta a resposta com Fetch.enable.
+  // v149: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -357,7 +360,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
 
-    // v148: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // v149: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
     // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
     // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
     try {
@@ -480,7 +483,7 @@ etapas.push({
             ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
           } catch(e){ bodyErro=e&&e.message?e.message:String(e); }
           if (ab&&ab.byteLength) {
-            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v148"});
+            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v149"});
             etapas.push({etapa:ok?"Network radar capturou planilha real":"Network radar observou candidato/não-XLS",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; bytes=${ab.byteLength}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
           } else {
             etapas.push({etapa:"Network radar viu candidato sem corpo acessível",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; erro=${bodyErro}`});
@@ -506,7 +509,7 @@ etapas.push({
           try { while(true){ const r=await cdp.send("IO.read",{handle:stream,size:65536}); const bytes=r.base64Encoded?bytesFromBase64(r.data||""):new TextEncoder().encode(r.data||""); partes.push(bytes); total+=bytes.byteLength; if(r.eof) break; if(total>20*1024*1024) throw new Error("Resposta excedeu 20 MB."); } } finally { try{await cdp.send("IO.close",{handle:stream});}catch(e){} }
           const combinado=new Uint8Array(total); let pos=0; for(const parte of partes){ combinado.set(parte,pos); pos+=parte.byteLength; }
           const ab=combinado.buffer.slice(combinado.byteOffset,combinado.byteOffset+combinado.byteLength);
-          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v148"});
+          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v149"});
           etapas.push({etapa:ok?"Fetch stream capturou planilha real":"Fetch stream candidato não era planilha",em:new Date().toISOString(),detalhe:`url=${url}; bytes=${total}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
         } catch(e){ etapas.push({etapa:"Fetch stream erro",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); try{await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId}));}catch(e2){} }
       });
@@ -555,6 +558,83 @@ etapas.push({
     });
   }
 
+
+  async function capturarEndpointXLSReal() {
+    etapas.push({ etapa: "acionando endpoint XLS real", em: new Date().toISOString(), detalhe: endpointXLS });
+
+    try {
+      const r = await page.evaluate(async (url) => {
+        const resp = await fetch(url, { method: "GET", credentials: "include", cache: "no-store" });
+        const buf = await resp.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = "";
+        const passo = 0x8000;
+        for (let i = 0; i < bytes.length; i += passo) {
+          bin += String.fromCharCode(...bytes.subarray(i, i + passo));
+        }
+        return {
+          status: resp.status,
+          url: resp.url,
+          contentType: resp.headers.get("content-type") || "",
+          contentDisposition: resp.headers.get("content-disposition") || "",
+          base64: btoa(bin),
+          bytes: bytes.length
+        };
+      }, endpointXLS);
+
+      const bytes = bytesFromBase64(r.base64 || "");
+      const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      const headers = { "content-type": r.contentType || "", "content-disposition": r.contentDisposition || "" };
+      const ok = aceitar({
+        url: r.url || endpointXLS,
+        status: Number(r.status || 0),
+        headers,
+        arrayBuffer: ab,
+        arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
+        origem: "endpoint-xls-real-v149"
+      });
+
+      etapas.push({
+        etapa: ok ? "endpoint XLS real capturado" : "endpoint XLS real não trouxe planilha",
+        em: new Date().toISOString(),
+        detalhe: `HTTP ${r.status}; bytes=${r.bytes}; content-type=${r.contentType}; content-disposition=${r.contentDisposition}; url=${r.url}`
+      });
+      if (ok) return capturado;
+    } catch (e) {
+      etapas.push({ etapa: "endpoint XLS real via fetch falhou", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
+    }
+
+    try {
+      const popupPromise = new Promise(resolve => {
+        const handler = async target => {
+          try {
+            if (target.type() !== "page") return;
+            const p = await target.page();
+            browser.off("targetcreated", handler);
+            resolve(p || null);
+          } catch (e) {}
+        };
+        browser.on("targetcreated", handler);
+        setTimeout(() => {
+          try { browser.off("targetcreated", handler); } catch (e) {}
+          resolve(null);
+        }, 8000);
+      });
+
+      await page.evaluate((url) => window.open(url, "j_printXLS"), endpointXLS);
+      const popup = await popupPromise;
+      etapas.push({
+        etapa: popup ? "popup XLS real aberto" : "popup XLS real não detectado",
+        em: new Date().toISOString(),
+        detalhe: endpointXLS
+      });
+    } catch (e) {
+      etapas.push({ etapa: "popup XLS real falhou", em: new Date().toISOString(), detalhe: e && e.message ? e.message : String(e) });
+    }
+
+    return capturado;
+  }
+
   async function aguardar(ms) {
     if (capturado) return capturado;
     const timeout = new Promise(resolve => setTimeout(() => resolve(null), ms));
@@ -569,6 +649,11 @@ etapas.push({
     if (!clicou) throw new Error("Botão real Gerar Planilha não localizado no formulário 2085.");
 
     let resultado = await aguardar(18000);
+    if (resultado) return resultado;
+
+    // v149: o POST retornar HTML é esperado. O próprio HTML executa
+    // printXLS('perform=run') e abre o endpoint real da planilha.
+    resultado = await capturarEndpointXLSReal();
     if (resultado) return resultado;
 
     // Segunda tentativa: chama diretamente a função legada usada pelo onclick do próprio GMAT,
@@ -607,7 +692,7 @@ etapas.push({
         detalhe: JSON.stringify(downloadInfo)
       });
     }
-    etapas.push({ etapa: "resumo radar v148", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
+    etapas.push({ etapa: "resumo radar v149", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
     return capturado;
   } finally {
     radarAtivo = false;
@@ -1040,7 +1125,7 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v148: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v149: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
@@ -1229,7 +1314,7 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v148 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
+        "A v149 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
@@ -1788,7 +1873,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v148",
+        versao: "v149",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
