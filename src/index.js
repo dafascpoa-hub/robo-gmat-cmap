@@ -259,7 +259,7 @@ async function submeterFormulario2085Nativo(frame, modo = "submit-direto") {
 async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   const endpointTrecho = "/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
   const endpoint = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaPesquisa.do";
-  // v151: o HTML retornado pelo POST chama printXLS('perform=run'),
+  // v152: o HTML retornado pelo POST chama printXLS('perform=run'),
   // que abre este endpoint real da exportação.
   const endpointXLS = "https://gmat.procempa.com.br/gmat/uc2085/gerarInformacoesPlanilhaXLS.do?perform=run&null";
   let localizado = await localizarFormulario2085Vivo(page);
@@ -294,7 +294,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   let resolver;
   const promessa = new Promise(resolve => { resolver = resolve; });
 
-  // v151: radar completo de rede ativo somente durante a geração.
+  // v152: radar completo de rede ativo somente durante a geração.
   let radarAtivo = false;
   const radarRequests = new Map();
   const radarResumo = [];
@@ -326,7 +326,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers),
-        origem: "clique-real-response-v151"
+        origem: "clique-real-response-v152"
       });
       const ct = textValue(headers["content-type"]).toLowerCase();
       const cd = textValue(headers["content-disposition"]).toLowerCase();
@@ -343,7 +343,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
   };
   page.on("response", responseHandler);
 
-  // v151: NÃO intercepta a resposta com Fetch.enable.
+  // v152: NÃO intercepta a resposta com Fetch.enable.
   // A v143 provou que o POST já está correto; agora observamos a rede e o evento
   // de download sem alterar o fluxo normal do Chromium.
   let cdp = null;
@@ -360,7 +360,7 @@ async function capturarPlanilha2085PorCliqueReal(page, etapas) {
       maxPostDataSize: 2 * 1024 * 1024
     }).catch(() => cdp.send("Network.enable"));
 
-    // v151: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
+    // v152: forçar o User-Agent na própria sessão Network que emitirá/observará o POST.
     // Na v145 o Emulation.setUserAgentOverride informou sucesso, mas os headers reais
     // continuaram HeadlessChrome/Linux. Aqui a alteração é feita no domínio Network.
     try {
@@ -483,7 +483,7 @@ etapas.push({
             ab=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
           } catch(e){ bodyErro=e&&e.message?e.message:String(e); }
           if (ab&&ab.byteLength) {
-            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v151"});
+            const ok=aceitar({url,status:Number(resp.status||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"network-radar-v152"});
             etapas.push({etapa:ok?"Network radar capturou planilha real":"Network radar observou candidato/não-XLS",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; bytes=${ab.byteLength}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
           } else {
             etapas.push({etapa:"Network radar viu candidato sem corpo acessível",em:new Date().toISOString(),detalhe:`url=${url}; HTTP ${resp.status||0}; mime=${resp.mimeType||""}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}; erro=${bodyErro}`});
@@ -509,7 +509,7 @@ etapas.push({
           try { while(true){ const r=await cdp.send("IO.read",{handle:stream,size:65536}); const bytes=r.base64Encoded?bytesFromBase64(r.data||""):new TextEncoder().encode(r.data||""); partes.push(bytes); total+=bytes.byteLength; if(r.eof) break; if(total>20*1024*1024) throw new Error("Resposta excedeu 20 MB."); } } finally { try{await cdp.send("IO.close",{handle:stream});}catch(e){} }
           const combinado=new Uint8Array(total); let pos=0; for(const parte of partes){ combinado.set(parte,pos); pos+=parte.byteLength; }
           const ab=combinado.buffer.slice(combinado.byteOffset,combinado.byteOffset+combinado.byteLength);
-          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v151"});
+          const ok=aceitar({url,status:Number(ev.responseStatusCode||0),headers,arrayBuffer:ab,arquivoNome:parseFileName(headers),origem:"fetch-stream-v152"});
           etapas.push({etapa:ok?"Fetch stream capturou planilha real":"Fetch stream candidato não era planilha",em:new Date().toISOString(),detalhe:`url=${url}; bytes=${total}; content-type=${headers["content-type"]||""}; content-disposition=${headers["content-disposition"]||""}`});
         } catch(e){ etapas.push({etapa:"Fetch stream erro",em:new Date().toISOString(),detalhe:e&&e.message?e.message:String(e)}); try{await cdp.send("Fetch.continueResponse",{requestId}).catch(()=>cdp.send("Fetch.continueRequest",{requestId}));}catch(e2){} }
       });
@@ -591,7 +591,7 @@ etapas.push({
         headers,
         arrayBuffer: ab,
         arquivoNome: parseFileName(headers) || "PlanilhaMateriais.xls",
-        origem: "endpoint-xls-real-v151"
+        origem: "endpoint-xls-real-v152"
       });
 
       etapas.push({
@@ -651,7 +651,7 @@ etapas.push({
     let resultado = await aguardar(18000);
     if (resultado) return resultado;
 
-    // v151: o POST retornar HTML é esperado. O próprio HTML executa
+    // v152: o POST retornar HTML é esperado. O próprio HTML executa
     // printXLS('perform=run') e abre o endpoint real da planilha.
     resultado = await capturarEndpointXLSReal();
     if (resultado) return resultado;
@@ -692,7 +692,7 @@ etapas.push({
         detalhe: JSON.stringify(downloadInfo)
       });
     }
-    etapas.push({ etapa: "resumo radar v151", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
+    etapas.push({ etapa: "resumo radar v152", em: new Date().toISOString(), detalhe: JSON.stringify(radarResumo.slice(-50)).slice(0,12000) });
     return capturado;
   } finally {
     radarAtivo = false;
@@ -815,44 +815,127 @@ async function prepararPaginaGMATV151(page, etapas) {
 }
 
 async function capturarPlanilha2033Consumo(pageOrigem, etapas) {
-  // v151: não reaproveita a página/frameset do 2085.
-  // O relatório 2085 navega dentro de frames legados e pode deixar referências
-  // destacadas/detached. Abrimos uma nova aba no MESMO contexto do navegador,
-  // preservando o JSESSIONID, sem consumir um novo Browser Run.
-  const browser = pageOrigem.browser();
-  let pagina2033 = null;
+  // v152: não abre nova aba nem reutiliza frames do GMAT.
+  // Usa diretamente a sessão JSESSIONID autenticada pelo navegador para executar
+  // o POST do 2033 e, em seguida, o endpoint real da planilha.
+  const periodo = periodo12MesesBR();
+  const urlPesquisa = "https://gmat.procempa.com.br/gmat/uc2033/consultaMateriaisConsumoPesquisa.do";
+  const urlXLS = "https://gmat.procempa.com.br/gmat/uc2033/consultaMateriaisConsumoPlanilha.do?perform=run&null";
 
-  for (let tentativa = 1; tentativa <= 2; tentativa++) {
-    try {
-      pagina2033 = await browser.newPage();
-      await prepararPaginaGMATV151(pagina2033, etapas);
+  etapas.push({
+    etapa: "preparando relatório 2033 por HTTP autenticado",
+    em: new Date().toISOString(),
+    detalhe: `Período ${periodo.inicio} a ${periodo.fim}; almoxarifado 845; sem abrir nova aba.`
+  });
 
-      etapas.push({
-        etapa: "página dedicada 2033 criada",
-        em: new Date().toISOString(),
-        detalhe: `Tentativa ${tentativa}; mesma sessão autenticada do GMAT.`
-      });
-
-      const resultado = await capturarPlanilha2033ConsumoNaPagina(pagina2033, etapas);
-      try { await pagina2033.close(); } catch (e) {}
-      return resultado;
-    } catch (e) {
-      const msg = e && e.message ? e.message : String(e);
-      etapas.push({
-        etapa: "tentativa 2033 em página dedicada falhou",
-        em: new Date().toISOString(),
-        detalhe: `Tentativa ${tentativa}: ${msg}`
-      });
-      try { if (pagina2033 && !pagina2033.isClosed()) await pagina2033.close(); } catch (e2) {}
-
-      const recuperavel = /detached Frame|Target closed|Execution context was destroyed|Cannot find context|Session closed|Protocol error/i.test(msg);
-      if (!recuperavel || tentativa >= 2) throw e;
-
-      await wait(700);
-      pagina2033 = null;
-    }
+  const cookie = await getCookiesHeaderDaPagina(pageOrigem);
+  if (!cookie || !/JSESSIONID=/i.test(cookie)) {
+    throw new Error("Sessão JSESSIONID do GMAT não disponível para o relatório 2033.");
   }
-  throw new Error("Relatório 2033 não pôde ser executado em página dedicada.");
+
+  const body = new URLSearchParams();
+  body.set("perform", "SHEET");
+  body.set("actionForward", "success");
+  body.set("strutsFormName", "consultaMateriaisConsumoPesquisaForm");
+  body.set("user", "");
+  body.set("dominio", "");
+  body.set("validate", "true");
+  body.set("printPerform", "SHEET");
+  body.set("pesquisar", "false");
+  body.set("chave", "");
+  body.set("tabController.activeTab", "1");
+  body.set("tabController.nextTab", "1");
+  body.set("comboOrgao.id", "87");
+  body.set("comboAlmoxarifado.id", "845");
+  body.set("searchObject.codMaterial", "");
+  body.set("comboOperacao.id", "11");
+  body.set("filtro.dataInicioOperacao", periodo.inicio);
+  body.set("filtro.dataFimOperacao", periodo.fim);
+  body.set("comboGrupoUnidAdm.id", "");
+  body.set("comboUnidAdm.id", "");
+  body.set("defaultSearch.pageSize", "0");
+  body.set("defaultSearch.orderField", "");
+  body.set("defaultSearch.orderDirection", "");
+
+  const headersBase = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "max-age=0",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Cookie": cookie,
+    "Origin": "https://gmat.procempa.com.br",
+    "Referer": "https://gmat.procempa.com.br/gmat/uc2033/consultaMateriaisConsumoPesquisa.do",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+  };
+
+  const postResp = await fetch(urlPesquisa, {
+    method: "POST",
+    headers: headersBase,
+    body: body.toString(),
+    redirect: "manual"
+  });
+
+  const postBytes = new Uint8Array(await postResp.arrayBuffer());
+  let postTexto = "";
+  try { postTexto = new TextDecoder("windows-1252").decode(postBytes); } catch (e) {
+    try { postTexto = new TextDecoder().decode(postBytes); } catch (e2) {}
+  }
+
+  etapas.push({
+    etapa: "POST 2033 concluído",
+    em: new Date().toISOString(),
+    detalhe: `HTTP ${postResp.status}; bytes=${postBytes.byteLength}; content-type=${postResp.headers.get("content-type") || ""}; contém planilha(run)=${/planilha\s*\(\s*['"]perform=run['"]\s*\)/i.test(postTexto)}`
+  });
+
+  if (!postResp.ok) {
+    throw new Error(`POST do relatório 2033 falhou. HTTP ${postResp.status}.`);
+  }
+
+  // O HTML do 2033, confirmado no HAR, executa planilha('perform=run').
+  // Repetimos exatamente a segunda etapa, agora pela mesma sessão.
+  const xlsResp = await fetch(urlXLS, {
+    method: "GET",
+    headers: {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+      "Cookie": cookie,
+      "Referer": urlPesquisa,
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    },
+    redirect: "follow"
+  });
+
+  const ab = await xlsResp.arrayBuffer();
+  const headers = {
+    "content-type": xlsResp.headers.get("content-type") || "",
+    "content-disposition": xlsResp.headers.get("content-disposition") || ""
+  };
+
+  if (!parecePlanilhaReal(ab, headers)) {
+    const bytes = new Uint8Array(ab);
+    let amostra = "";
+    try { amostra = new TextDecoder("windows-1252").decode(bytes.slice(0,1200)); } catch (e) {}
+    throw new Error(
+      `Endpoint real do 2033 não retornou XLS. HTTP ${xlsResp.status}; bytes=${ab.byteLength}; ` +
+      `content-type=${headers["content-type"]}; amostra=${amostra.slice(0,450)}`
+    );
+  }
+
+  etapas.push({
+    etapa: "planilha 2033 capturada por HTTP autenticado",
+    em: new Date().toISOString(),
+    detalhe: `HTTP ${xlsResp.status}; ${ab.byteLength} bytes; período ${periodo.inicio} a ${periodo.fim}.`
+  });
+
+  return {
+    url: xlsResp.url || urlXLS,
+    status: Number(xlsResp.status || 0),
+    headers,
+    arrayBuffer: ab,
+    arquivoNome: parseFileName(headers) || "CONSUMO.xls",
+    origem: "http-sessao-2033-v152",
+    periodo
+  };
 }
 
 async function capturarPlanilha2033ConsumoNaPagina(page, etapas) {
@@ -945,7 +1028,7 @@ async function capturarPlanilha2033ConsumoNaPagina(page, etapas) {
   return {
     url:r.url||urlXLS,status:Number(r.status||0),headers,arrayBuffer:ab,
     arquivoNome:parseFileName(headers)||"CONSUMO.xls",
-    origem:"endpoint-consumo-2033-v151",periodo
+    origem:"endpoint-consumo-2033-v152",periodo
   };
 }
 
@@ -1327,7 +1410,7 @@ async function atualizarEstoqueGMAT(request, env) {
     log("abrindo navegador");
     browser = await puppeteer.launch(browserBinding);
     page = await browser.newPage();
-    // v151: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
+    // v152: apresentar o Browser Rendering ao GMAT como Chrome normal em Windows.
     try {
       const uaCdp = await page.target().createCDPSession();
       await uaCdp.send("Emulation.setUserAgentOverride", {
@@ -1516,14 +1599,14 @@ async function atualizarEstoqueGMAT(request, env) {
       });
       throw new Error(
         "O botão real do relatório 2085 foi acionado, mas nenhuma resposta com XLS real foi capturada. " +
-        "A v151 usa radar completo após o clique: observa todas as requisições, redirects, MIME types e attachments e tenta capturar XLS/XLSX/CSV/octet-stream por Network e Fetch.takeResponseBodyAsStream. " +
+        "A v152 mantém a captura já funcional do 2085 e executa o 2033 por HTTP autenticado usando o JSESSIONID da mesma sessão, evitando frames e novas abas. " +
         "Última página: " + title + " | Texto visível: " + String(text).slice(0, 700)
       );
     }
 
     log("planilha 2085 capturada");
 
-    log("capturando relatório 2033 consumo em página dedicada");
+    log("capturando relatório 2033 consumo por HTTP autenticado");
     const capturedConsumo = await capturarPlanilha2033Consumo(page, etapas);
     if(!capturedConsumo) throw new Error("Planilha 2033 não foi capturada.");
 
@@ -2097,7 +2180,7 @@ export default {
       return json({
         ok: true,
         servico: "Robô GMAT CMAP",
-        versao: "v151",
+        versao: "v152",
         navegadorConfigurado: !!getBrowserBinding(env),
         urlGMATConfigurada: !!env.CMAP_GMAT_URL,
         usuarioConfigurado: !!env.CMAP_GMAT_USUARIO,
